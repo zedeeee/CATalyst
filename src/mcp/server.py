@@ -3,9 +3,10 @@ MCP Server for CATalyst.
 Exposes CATIA V5 Automation API knowledge as tools to AI Assistants via the Model Context Protocol.
 """
 
-import sys
+import json
 import logging
-from typing import Dict, List, Any
+import sys
+from typing import Any, Dict, List
 from mcp.server.fastmcp import FastMCP
 
 from src.engine.db import CatalystDB
@@ -39,8 +40,6 @@ def get_catia_interface(name: str) -> str:
     if not res:
         return f"Error: Interface '{name}' not found in CATIA V5 documentation."
         
-    # We return JSON string here as it is dense and AI easily parses it.
-    import json
     return json.dumps(res, indent=2, ensure_ascii=False)
 
 @mcp.tool()
@@ -60,7 +59,6 @@ def search_catia_api(query: str, limit: int = 10) -> str:
     if not results:
         return f"No matches found for '{query}'."
         
-    import json
     return json.dumps(results, indent=2, ensure_ascii=False)
 
 @mcp.tool()
@@ -78,7 +76,6 @@ def get_catia_enum(name: str) -> str:
     if not res:
         return f"Error: Enum '{name}' not found."
         
-    import json
     return json.dumps(res, indent=2, ensure_ascii=False)
 
 if __name__ == "__main__":

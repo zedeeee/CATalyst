@@ -141,6 +141,18 @@ class CatalystDB:
         
         return results
 
-    def __del__(self):
-        if hasattr(self, 'conn'):
+    def close(self):
+        """Closes the underlying SQLite database connection."""
+        if hasattr(self, 'conn') and self.conn:
             self.conn.close()
+            self.conn = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def __del__(self):
+        self.close()
+
