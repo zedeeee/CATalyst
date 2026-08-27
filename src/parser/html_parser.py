@@ -150,13 +150,27 @@ class CatiaHtmlParser:
                         if t_match:
                             return_type = t_match.group(1)
 
-                # Extract Parameters (usually inside <td><tt>paramName</tt></td>)
+                # Extract Parameters (iterate over all <tt> tags within the method's table)
                 params = []
-                tts = tr.find_all("tt")
+                tts = table.find_all("tt")
                 for tt in tts:
+                    p_name = tt.text.strip()
+                    p_type = "Any"
+                    
+                    # The <script> containing the type is usually in the preceding <td>
+                    td = tt.find_parent("td")
+                    if td:
+                        prev_td = td.find_previous_sibling("td")
+                        if prev_td:
+                            script_tag = prev_td.find("script")
+                            if script_tag and script_tag.string:
+                                t_match = re.search(r"activateLink\(['\"]([^'\"]+)['\"]", script_tag.string)
+                                if t_match:
+                                    p_type = t_match.group(1)
+                                    
                     params.append({
-                        "name": tt.text.strip(),
-                        "type": "Any" # Complex to parse reliably from raw HTML table, refined via AST later
+                        "name": p_name,
+                        "type": p_type
                     })
 
                 interface_data["methods"].append({
