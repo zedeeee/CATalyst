@@ -45,12 +45,12 @@ class CatiaHtmlParser:
             enum_data["description"] = b_tag.text.strip()
 
         # Extract Enum Values
-        # Typically located in a <dl><dt><b>ValueName</b><dd>Value Description ...
+        # Typically located in <dt><tt>ValueName</tt><dd>Value Description ...
         dts = soup.find_all("dt")
         for dt in dts:
-            b_val = dt.find("b")
-            if b_val:
-                val_name = b_val.text.strip()
+            tt_val = dt.find("tt")
+            if tt_val:
+                val_name = tt_val.text.strip()
                 if not val_name:
                     continue
                 
@@ -98,9 +98,10 @@ class CatiaHtmlParser:
                 interface_data["name"] = h1.text.split("(")[0].strip()
 
         # Extract Description
-        b_tag = soup.find("b")
-        if b_tag and b_tag.find("i"):
-            interface_data["description"] = b_tag.text.strip()
+        for b_tag in soup.find_all("b"):
+            if b_tag.find("i"):
+                interface_data["description"] = b_tag.text.strip()
+                break
 
         # Extract Members (Properties and Methods)
         # We iterate over all <table> tags which represent a Property/Func/Sub signature
