@@ -1,0 +1,21 @@
+# Auto detect text files and force LF line endings
+* text=auto eol=lf
+
+# Explicit text file formats
+*.py text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# Binary file formats
+*.chm binary
+*.db binary
+*.sqlite binary
+*.png binary
+*.jpg binary
+*.ico binary
