@@ -33,6 +33,7 @@ class CatalystDB:
             "name": i_row["name"],
             "framework": i_row["framework"],
             "description": i_row["description"],
+            "inheritance_chain": json.loads(i_row["inheritance_chain"]) if i_row["inheritance_chain"] else [],
             "properties": [],
             "methods": [],
             "usecases": []

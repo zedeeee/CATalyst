@@ -12,6 +12,11 @@ def format_interface_markdown(data: dict) -> str:
     md = []
     md.append(f"# {data['name']}")
     md.append(f"**Framework**: `{data['framework']}`\n")
+    
+    if data.get('inheritance_chain'):
+        chain_str = " -> ".join([f"`{c}`" for c in data['inheritance_chain']])
+        md.append(f"**Inheritance**: {chain_str}\n")
+        
     md.append(f"> {data['description']}\n")
     
     if data['properties']:
