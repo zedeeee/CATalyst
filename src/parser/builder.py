@@ -45,7 +45,8 @@ class CatalystBuilder:
             CREATE TABLE interfaces (
                 name TEXT PRIMARY KEY,
                 framework TEXT,
-                description TEXT
+                description TEXT,
+                inheritance_chain TEXT
             )
         ''')
         
@@ -148,10 +149,21 @@ class CatalystBuilder:
             i_data = payload["data"]
             i_name = i_data["name"]
             
+            # Resolve Ancestors
+            ancestors_ids = self.inheritance_tree.get_ancestors(class_id)
+            
+            # Build actual name chain: Self -> Parent -> Grandparent
+            ancestor_names = []
+            for anc_id in ancestors_ids:
+                if anc_id in raw_interfaces:
+                    ancestor_names.append(raw_interfaces[anc_id]["data"]["name"])
+            
+            chain_list = [i_name] + ancestor_names
+            
             # Insert Base Interface
             cursor.execute(
-                "INSERT OR REPLACE INTO interfaces (name, framework, description) VALUES (?, ?, ?)",
-                (i_name, i_data["framework"], i_data["description"])
+                "INSERT OR REPLACE INTO interfaces (name, framework, description, inheritance_chain) VALUES (?, ?, ?, ?)",
+                (i_name, i_data["framework"], i_data["description"], json.dumps(chain_list, ensure_ascii=False))
             )
             
             # Insert Usecases
@@ -160,9 +172,6 @@ class CatalystBuilder:
                     "INSERT INTO usecases (interface_name, context, code) VALUES (?, ?, ?)",
                     (i_name, uc["context"], uc["code"])
                 )
-                
-            # Resolve Ancestors
-            ancestors_ids = self.inheritance_tree.get_ancestors(class_id)
             
             # Collect all properties and methods (start with self)
             # Use dictionary to override parent methods with child methods if overridden
