@@ -1,6 +1,7 @@
-import pytest
+import shutil
 import tempfile
 from pathlib import Path
+import pytest
 from src.parser.html_parser import CatiaHtmlParser
 
 @pytest.fixture
@@ -54,9 +55,6 @@ def test_parse_interface(parser):
     </body>
     </html>
     """
-    import tempfile
-    import shutil
-    
     temp_dir = tempfile.mkdtemp()
     try:
         part_interfaces_dir = Path(temp_dir) / "PartInterfaces"
@@ -83,4 +81,5 @@ def test_parse_interface(parser):
         assert data["methods"][0]["params"][0]["name"] == "iLine"
         assert data["methods"][0]["params"][0]["type"] == "Any"
     finally:
-        temp_path.unlink()
+        shutil.rmtree(temp_dir, ignore_errors=True)
+

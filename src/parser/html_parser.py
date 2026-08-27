@@ -40,9 +40,10 @@ class CatiaHtmlParser:
             enum_data["name"] = h1.text.replace("(Enumeration)", "").strip()
 
         # Extract Description
-        b_tag = soup.find("b")
-        if b_tag and b_tag.find("i"):
-            enum_data["description"] = b_tag.text.strip()
+        for b_tag in soup.find_all("b"):
+            if b_tag.find("i"):
+                enum_data["description"] = b_tag.text.strip()
+                break
 
         # Extract Enum Values
         # Typically located in <dt><tt>ValueName</tt><dd>Value Description ...
@@ -78,7 +79,7 @@ class CatiaHtmlParser:
             "type": "interface",
             "name": "",
             "framework": framework,
-            "inherits": "",  # To be populated by inheritance.py using CAAMain.xml
+            "inherits": "",  # Populated by builder.py using jsTree.js
             "description": "",
             "properties": [],
             "methods": []
@@ -143,14 +144,8 @@ class CatiaHtmlParser:
                 
                 return_type = "void" if func_type == "Sub" else "Any"
                 if func_type == "Func":
-                    # Simple heuristic: last activateLink might be return type, but usually Funcs have 'As <Type>'
-                    as_idx = text_content.rfind("As ")
-                    if as_idx != -1:
-                        # Will refine this later or rely on IDL, for now keep simple
-                        pass
-                    
                     script_links = tr.find_all("script")
-                    if script_links:
+                    if script_links and script_links[-1].string:
                         t_match = re.search(r"activateLink\(['\"]([^'\"]+)['\"]", script_links[-1].string)
                         if t_match:
                             return_type = t_match.group(1)

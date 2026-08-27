@@ -109,8 +109,10 @@ def main():
         for r in results:
             print(f"- [{r['type'].upper()}] **{r['name']}**")
             if r['description']:
-                desc = r['description'].replace('\n', ' ')[:100]
-                print(f"  > {desc}...")
+                desc = r['description'].replace('\n', ' ').strip()
+                if len(desc) > 100:
+                    desc = desc[:100] + "..."
+                print(f"  > {desc}")
 
 if __name__ == "__main__":
     main()
