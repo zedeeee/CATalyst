@@ -112,9 +112,9 @@ class CatalystDB:
         cursor.execute("""
             SELECT 'enum' as type, name, description 
             FROM enums 
-            WHERE name LIKE ? OR description LIKE ?
+            WHERE name LIKE ? OR description LIKE ? OR values_json LIKE ?
             LIMIT ?
-        """, (search_pattern, search_pattern, limit))
+        """, (search_pattern, search_pattern, search_pattern, limit))
         
         for row in cursor.fetchall():
             results.append({
