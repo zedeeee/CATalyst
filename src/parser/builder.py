@@ -7,6 +7,7 @@ import os
 import json
 import sqlite3
 import logging
+import hashlib
 from pathlib import Path
 from tqdm import tqdm
 
@@ -176,8 +177,14 @@ class CatalystBuilder:
                 (i_name, i_data["framework"], i_data["description"], json.dumps(chain_list, ensure_ascii=False))
             )
             
-            # Insert Usecases
+            # Insert Usecases (deduplicated by interface, context, and code hash)
+            inserted_usecase_hashes = set()
             for uc in payload["usecases"]:
+                code_norm = "\n".join(l.rstrip() for l in uc["code"].splitlines() if l.strip())
+                uc_hash = hashlib.sha256(f"{i_name}:{uc['context']}:{code_norm}".encode("utf-8")).hexdigest()
+                if uc_hash in inserted_usecase_hashes:
+                    continue
+                inserted_usecase_hashes.add(uc_hash)
                 cursor.execute(
                     "INSERT INTO usecases (interface_name, context, code) VALUES (?, ?, ?)",
                     (i_name, uc["context"], uc["code"])
@@ -222,6 +229,7 @@ class CatalystBuilder:
         cursor.execute("CREATE INDEX idx_props_interface ON properties(interface_name)")
         cursor.execute("CREATE INDEX idx_methods_interface ON methods(interface_name)")
         cursor.execute("CREATE INDEX idx_usecases_interface ON usecases(interface_name)")
+        cursor.execute("CREATE INDEX idx_usecases_lookup ON usecases(interface_name, context)")
         self.conn.commit()
         
         logger.info(f"Build complete. Database saved to {self.db_path}")

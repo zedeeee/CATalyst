@@ -5,6 +5,7 @@ These examples are crucial for providing contextual snippets to the LLM.
 """
 
 import re
+import hashlib
 import logging
 from pathlib import Path
 from typing import Dict, List, Any
@@ -19,7 +20,7 @@ class UsecaseParser:
     def extract_examples(self, file_path: Path) -> List[Dict[str, str]]:
         """
         Parses an HTML file and extracts inline VBScript examples.
-        Returns a list of dictionaries containing the example context and code.
+        Handles nested <pre> tag deduplication and context name normalization.
         """
         examples = []
         try:
@@ -31,25 +32,30 @@ class UsecaseParser:
 
         soup = BeautifulSoup(html_content, "lxml")
         
-        # In CATIA docs, examples are usually under <dt><b>Example:</b></dt> 
-        # followed by a <dd> which contains a <pre> block.
-        # Alternatively, they might just be <pre> tags. We'll look for <pre> tags 
-        # and try to infer their context.
+        # In CATIA docs, code examples often use nested <pre class="code"><pre>...</pre></pre>.
+        # We only match top-level <pre> elements to avoid duplicate extracts.
+        top_pre_tags = [p for p in soup.find_all("pre") if p.find_parent("pre") is None]
+        seen_hashes = set()
 
-        pre_tags = soup.find_all("pre")
-        
-        for pre in pre_tags:
-            # Clean up the code by getting plain text (removes <font color="red">, etc.)
+        for pre in top_pre_tags:
             code_snippet = pre.get_text().strip()
             if not code_snippet:
                 continue
+
+            # Normalized hash to avoid exact duplicates within the same document
+            normalized_code = "\n".join(l.rstrip() for l in code_snippet.splitlines() if l.strip())
+            code_hash = hashlib.sha256(normalized_code.encode("utf-8")).hexdigest()
+            if code_hash in seen_hashes:
+                continue
+            seen_hashes.add(code_hash)
                 
-            # Try to find the associated method/property name.
-            # Traverse upwards in the document order to find the closest <a name="...">
-            context_name = "Unknown"
+            # Find the associated method/property name from preceding <a> anchor
+            context_name = "Overview"
             prev_a = pre.find_previous("a", attrs={"name": True})
             if prev_a and prev_a.get("name"):
-                context_name = prev_a["name"]
+                raw_ctx = prev_a["name"].strip()
+                if raw_ctx not in ("multiview", "Methods", "Properties", "Top", "HomeIdx"):
+                    context_name = raw_ctx
                 
             examples.append({
                 "context": context_name,
@@ -58,6 +64,7 @@ class UsecaseParser:
             })
 
         return examples
+
 
 if __name__ == "__main__":
     import argparse
