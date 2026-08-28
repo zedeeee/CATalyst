@@ -35,11 +35,21 @@ class CatalystBuilder:
         self.dist_dir.mkdir(parents=True, exist_ok=True)
         
         if self.db_path.exists():
-            self.db_path.unlink()
+            try:
+                self.db_path.unlink()
+            except PermissionError:
+                logger.warning(f"Database {self.db_path} is currently opened by another process. Overwriting existing tables...")
             
         self.conn = sqlite3.connect(self.db_path)
         cursor = self.conn.cursor()
         
+        # Reset existing tables if unlink was locked
+        cursor.execute("DROP TABLE IF EXISTS interfaces")
+        cursor.execute("DROP TABLE IF EXISTS properties")
+        cursor.execute("DROP TABLE IF EXISTS methods")
+        cursor.execute("DROP TABLE IF EXISTS enums")
+        cursor.execute("DROP TABLE IF EXISTS usecases")
+
         # Interfaces Table
         cursor.execute('''
             CREATE TABLE interfaces (
