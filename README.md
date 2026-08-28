@@ -77,6 +77,7 @@ CATalyst/
 #### 环境要求
 
 - Python 3.10+
+- [uv](https://docs.astral.sh/uv/) (极速 Python 包管理器，推荐)
 - Windows（CHM 解包依赖 7z 或 `hh.exe`）
 
 #### 安装与构建
@@ -84,10 +85,11 @@ CATalyst/
 ```bash
 git clone https://github.com/zedeeee/CATalyst.git
 cd CATalyst
-pip install -r requirements.txt
+uv venv
+uv pip install -r requirements.txt
 
 # 使用默认 R27 版本构建数据库
-python build.py
+uv run build.py
 ```
 
 #### 适配你自己的 CATIA 版本
@@ -161,8 +163,9 @@ CATIA V5 Automation interfaces are **strictly backward-compatible** with > 95% o
 ```bash
 git clone https://github.com/zedeeee/CATalyst.git
 cd CATalyst
-pip install -r requirements.txt
-python build.py
+uv venv
+uv pip install -r requirements.txt
+uv run build.py
 ```
 
 To use your own CATIA version, copy your `V5Automation.chm` from:
