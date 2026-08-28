@@ -154,11 +154,24 @@ class CatalystDB:
         canonical_name = i_row["name"]
         filter_member = member_name.strip().lower() if member_name else None
 
+        # Fetch total counts for transparency and preventing silent truncation misunderstanding
+        cursor.execute("SELECT COUNT(*) as cnt FROM properties WHERE interface_name = ? COLLATE NOCASE", (canonical_name,))
+        total_props = cursor.fetchone()["cnt"]
+
+        cursor.execute("SELECT COUNT(*) as cnt FROM methods WHERE interface_name = ? COLLATE NOCASE", (canonical_name,))
+        total_methods = cursor.fetchone()["cnt"]
+
+        cursor.execute("SELECT COUNT(*) as cnt FROM usecases WHERE interface_name = ? COLLATE NOCASE", (canonical_name,))
+        total_usecases = cursor.fetchone()["cnt"]
+
         interface_data = {
             "name": canonical_name,
             "framework": i_row["framework"],
             "description": i_row["description"],
             "inheritance_chain": json.loads(i_row["inheritance_chain"]) if i_row["inheritance_chain"] else [],
+            "total_properties": total_props,
+            "total_methods": total_methods,
+            "total_usecases": total_usecases,
             "properties": [],
             "methods": [],
             "usecases": []
