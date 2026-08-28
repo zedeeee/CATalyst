@@ -63,23 +63,38 @@ def run_smoke_test(db_path: Path):
     assert "Product" in prop_lookup["host_interfaces"], "Smoke test failed: 'Product' not found in host interfaces of 'PartNumber'."
     logger.info("  [4/6] Property/method reverse host interface lookup verified ('PartNumber' -> 'Product').")
 
-    # 5. Test MCP Server Tool Endpoints & Alias Compatibility
-    # 5.1 get_catia_interface with alias
-    mcp_if_res = json.loads(mcp_server.get_catia_interface(interface_name="Pad"))
+    # 5. Test MCP Server Tool Endpoints & Granular Features
+    # 5.1 get_catia_interface with alias & member filtering
+    mcp_if_res = json.loads(mcp_server.get_catia_interface(interface_name="Pad", member_name="GetDirection"))
     assert not mcp_if_res.get("isError") and mcp_if_res.get("name") == "Pad", f"MCP interface query failed: {mcp_if_res}"
+    assert len(mcp_if_res["methods"]) == 1 and mcp_if_res["methods"][0]["name"] == "GetDirection", "Granular member filter failed"
 
-    # 5.2 get_catia_enum with alias and value
+    # 5.2 Python pywin32 mapping hints on methods with out params
+    vis_res = db.get_interface("VisPropertySet", member_name="GetRealColor")
+    assert vis_res and len(vis_res["methods"]) == 1, "Failed to retrieve VisPropertySet.GetRealColor"
+    method_data = vis_res["methods"][0]
+    assert "python_mapping" in method_data and "pywin32_call" in method_data["python_mapping"], "Missing Python COM mapping hint"
+
+    # 5.3 get_catia_usecases tool
+    uc_res = json.loads(mcp_server.get_catia_usecases(interface="VisPropertySet", member="GetRealColor"))
+    assert not uc_res.get("isError") and uc_res.get("total_examples", 0) > 0, f"MCP usecase query failed: {uc_res}"
+
+    # 5.4 get_catia_search_syntax tool
+    syntax_res = json.loads(mcp_server.get_catia_search_syntax(workbench="PartDesign"))
+    assert not syntax_res.get("isError") and syntax_res.get("prefix") == "CATPrtSearch", f"MCP search syntax failed: {syntax_res}"
+
+    # 5.5 get_catia_enum with alias and value
     mcp_enum_res = json.loads(mcp_server.get_catia_enum(enum_name="CatProductSource", value=1))
     assert not mcp_enum_res.get("isError") and mcp_enum_res.get("matched_value", {}).get("name") == "catProductMade", (
         f"MCP enum query failed: {mcp_enum_res}"
     )
 
-    # 5.3 search_catia_api with alias
+    # 5.6 search_catia_api with alias
     mcp_search_res = json.loads(mcp_server.search_catia_api(keyword="PartNumber", item_type="property"))
     assert not mcp_search_res.get("isError") and mcp_search_res.get("total_matches", 0) > 0, (
         f"MCP search query failed: {mcp_search_res}"
     )
-    logger.info("  [5/6] MCP tool endpoints and parameter aliases verified.")
+    logger.info("  [5/6] MCP tool endpoints, granular filters, usecase tools, and syntax verified.")
 
     # 6. Test MCP Server Global Exception Safety
     err_res = json.loads(mcp_server.get_catia_interface(name="NonExistentInterface999"))

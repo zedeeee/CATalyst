@@ -65,6 +65,51 @@ def _resolve_db_path(db_path: Optional[Union[str, Path]] = None) -> Path:
     )
 
 
+from .search_grammar import get_search_grammar
+
+
+def _generate_python_method_hint(method_name: str, return_type: str, params: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
+    """
+    Generates pywin32 Python COM calling convention hints for CATIA methods,
+    specifically highlighting tuple return unpacking for [out] parameters and safe arrays.
+    """
+    hints = {}
+    out_params = []
+    in_params = []
+    has_safearray = False
+
+    for p in params:
+        p_name = p.get("name", "")
+        p_type = p.get("type", "")
+        if p_type == "CATSafeArrayVariant" or "SafeArray" in p_type:
+            has_safearray = True
+
+        # In CATIA COM IDL, parameters prefixed with 'o' or 'io' are typically out/inout reference values
+        if (p_name.startswith("o") and len(p_name) > 1 and p_name[1].isupper()) or \
+           (p_name.startswith("io") and len(p_name) > 2 and p_name[2].isupper()):
+            out_params.append(p_name)
+        else:
+            in_params.append(p_name)
+
+    if out_params:
+        ret_clean = return_type.strip() if return_type and return_type != "void" else ""
+        if ret_clean:
+            lhs = f"{ret_clean.lower()}_status, " + ", ".join(out_params)
+        elif len(out_params) == 1:
+            lhs = out_params[0]
+        else:
+            lhs = f"({', '.join(out_params)})"
+
+        in_args_str = ", ".join(in_params)
+        hints["pywin32_call"] = f"{lhs} = obj.{method_name}({in_args_str})"
+        hints["out_parameters"] = f"In Python (pywin32), out parameters ({', '.join(out_params)}) are returned as a tuple."
+
+    if has_safearray:
+        hints["safearray_note"] = "Parameters of type CATSafeArrayVariant must be passed as Python tuple/list (e.g. (x, y, z))."
+
+    return hints if hints else None
+
+
 class CatalystDB:
     def __init__(self, db_path: Optional[Union[str, Path]] = None):
         self.db_path = _resolve_db_path(db_path)
@@ -80,8 +125,22 @@ class CatalystDB:
             self._local.conn = conn_instance
         return conn_instance
 
-    def get_interface(self, name: str) -> Optional[Dict[str, Any]]:
-        """Retrieves an interface by name, including its fully resolved properties, methods, and usecases."""
+    def get_interface(
+        self,
+        name: str,
+        member_name: Optional[str] = None,
+        include_usecases: bool = True,
+        max_usecases: int = 3
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves an interface by name with optional member filtering and usecase granularity control.
+        
+        Args:
+            name: Exact or case-insensitive interface name (e.g. 'Pad', 'VisPropertySet')
+            member_name: Optional property or method name to filter by (e.g. 'SetShow', 'PartNumber')
+            include_usecases: Whether to include VBScript code examples (default: True)
+            max_usecases: Maximum usecases to return in overview mode (default: 3, 0 or negative for unlimited)
+        """
         if not name:
             return None
         cursor = self.conn.cursor()
@@ -93,11 +152,26 @@ class CatalystDB:
             return None
             
         canonical_name = i_row["name"]
+        filter_member = member_name.strip().lower() if member_name else None
+
+        # Fetch total counts for transparency and preventing silent truncation misunderstanding
+        cursor.execute("SELECT COUNT(*) as cnt FROM properties WHERE interface_name = ? COLLATE NOCASE", (canonical_name,))
+        total_props = cursor.fetchone()["cnt"]
+
+        cursor.execute("SELECT COUNT(*) as cnt FROM methods WHERE interface_name = ? COLLATE NOCASE", (canonical_name,))
+        total_methods = cursor.fetchone()["cnt"]
+
+        cursor.execute("SELECT COUNT(*) as cnt FROM usecases WHERE interface_name = ? COLLATE NOCASE", (canonical_name,))
+        total_usecases = cursor.fetchone()["cnt"]
+
         interface_data = {
             "name": canonical_name,
             "framework": i_row["framework"],
             "description": i_row["description"],
             "inheritance_chain": json.loads(i_row["inheritance_chain"]) if i_row["inheritance_chain"] else [],
+            "total_properties": total_props,
+            "total_methods": total_methods,
+            "total_usecases": total_usecases,
             "properties": [],
             "methods": [],
             "usecases": []
@@ -106,8 +180,11 @@ class CatalystDB:
         # 2. Fetch Properties
         cursor.execute("SELECT * FROM properties WHERE interface_name = ? COLLATE NOCASE ORDER BY name", (canonical_name,))
         for p in cursor.fetchall():
+            p_name = p["name"]
+            if filter_member and p_name.lower() != filter_member:
+                continue
             interface_data["properties"].append({
-                "name": p["name"],
+                "name": p_name,
                 "type": p["type"],
                 "readonly": bool(p["readonly"]),
                 "declared_in": p["declared_in"]
@@ -116,22 +193,108 @@ class CatalystDB:
         # 3. Fetch Methods
         cursor.execute("SELECT * FROM methods WHERE interface_name = ? COLLATE NOCASE ORDER BY name", (canonical_name,))
         for m in cursor.fetchall():
-            interface_data["methods"].append({
-                "name": m["name"],
+            m_name = m["name"]
+            if filter_member and m_name.lower() != filter_member:
+                continue
+            params = json.loads(m["params_json"])
+            method_entry = {
+                "name": m_name,
                 "return_type": m["return_type"],
-                "params": json.loads(m["params_json"]),
+                "params": params,
                 "declared_in": m["declared_in"]
-            })
+            }
+            py_hints = _generate_python_method_hint(m_name, m["return_type"], params)
+            if py_hints:
+                method_entry["python_mapping"] = py_hints
+
+            interface_data["methods"].append(method_entry)
             
-        # 4. Fetch Usecases
-        cursor.execute("SELECT * FROM usecases WHERE interface_name = ? COLLATE NOCASE", (canonical_name,))
-        for uc in cursor.fetchall():
-            interface_data["usecases"].append({
-                "context": uc["context"],
-                "code": uc["code"]
-            })
+        # 4. Fetch Usecases (if enabled)
+        if include_usecases:
+            if filter_member:
+                cursor.execute(
+                    "SELECT context, code FROM usecases WHERE interface_name = ? COLLATE NOCASE AND context = ? COLLATE NOCASE",
+                    (canonical_name, filter_member)
+                )
+                matching_ucs = cursor.fetchall()
+                if not matching_ucs:
+                    # Fallback to searching context or code text
+                    cursor.execute(
+                        "SELECT context, code FROM usecases WHERE interface_name = ? COLLATE NOCASE AND (context LIKE ? OR code LIKE ?)",
+                        (canonical_name, f"%{filter_member}%", f"%{filter_member}%")
+                    )
+                    matching_ucs = cursor.fetchall()
+                for uc in matching_ucs:
+                    interface_data["usecases"].append({
+                        "context": uc["context"],
+                        "code": uc["code"]
+                    })
+            else:
+                cursor.execute("SELECT context, code FROM usecases WHERE interface_name = ? COLLATE NOCASE", (canonical_name,))
+                all_ucs = cursor.fetchall()
+                if max_usecases > 0:
+                    all_ucs = all_ucs[:max_usecases]
+                for uc in all_ucs:
+                    interface_data["usecases"].append({
+                        "context": uc["context"],
+                        "code": uc["code"]
+                    })
+
+        # If member_name was specified and neither properties nor methods matched
+        if filter_member and not interface_data["properties"] and not interface_data["methods"]:
+            return {
+                "name": canonical_name,
+                "member_not_found": member_name,
+                "message": f"Member '{member_name}' not found in interface '{canonical_name}'."
+            }
             
         return interface_data
+
+    def get_usecases(
+        self,
+        interface: str,
+        member: Optional[str] = None,
+        limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieves targeted code usecases for an interface and optional member.
+        """
+        if not interface:
+            return []
+        cursor = self.conn.cursor()
+        target_if = interface.strip()
+        target_mbr = member.strip() if member else None
+
+        if target_mbr:
+            cursor.execute(
+                "SELECT interface_name, context, code FROM usecases WHERE interface_name = ? COLLATE NOCASE AND context = ? COLLATE NOCASE LIMIT ?",
+                (target_if, target_mbr, limit)
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                cursor.execute(
+                    "SELECT interface_name, context, code FROM usecases WHERE interface_name = ? COLLATE NOCASE AND (context LIKE ? OR code LIKE ?) LIMIT ?",
+                    (target_if, f"%{target_mbr}%", f"%{target_mbr}%", limit)
+                )
+                rows = cursor.fetchall()
+        else:
+            cursor.execute(
+                "SELECT interface_name, context, code FROM usecases WHERE interface_name = ? COLLATE NOCASE LIMIT ?",
+                (target_if, limit)
+            )
+            rows = cursor.fetchall()
+
+        return [{"interface": r["interface_name"], "context": r["context"], "code": r["code"]} for r in rows]
+
+    def get_search_syntax(
+        self,
+        workbench: Optional[str] = None,
+        query_type: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Retrieves Selection.Search query syntax grammar for CATIA workbenches and geometry types.
+        """
+        return get_search_grammar(workbench=workbench, query_type=query_type)
 
     def get_enum(
         self,

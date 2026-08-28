@@ -49,19 +49,29 @@ def get_db() -> Optional[CatalystDB]:
 def get_catia_interface(
     name: str = "",
     interface_name: str = "",
-    interface: str = ""
+    interface: str = "",
+    member_name: str = "",
+    member: str = "",
+    include_usecases: bool = True,
+    max_usecases: int = 3
 ) -> str:
     """
     Retrieve full documentation for a specific CATIA V5 COM Interface.
-    Includes inherited properties, methods, and VBScript examples.
+    Supports member-level filtering and usecase granularity control to save tokens.
     
     Args:
-        name: Name of the interface (e.g., 'Pad', 'Prism', 'PartDocument', 'SystemConfiguration')
+        name: Name of the interface (e.g., 'Pad', 'Prism', 'PartDocument', 'VisPropertySet')
         interface_name: Alias for name
         interface: Alias for name
+        member_name: Optional property or method name to filter by (e.g., 'SetShow', 'PartNumber')
+        member: Alias for member_name
+        include_usecases: Whether to include VBScript code examples (default: True, set False for signature-only)
+        max_usecases: Maximum usecases to return in overview mode (default: 3)
     """
     try:
         target_name = (name or interface_name or interface).strip()
+        target_member = (member_name or member).strip()
+
         if not target_name:
             return json.dumps({
                 "isError": True,
@@ -75,7 +85,12 @@ def get_catia_interface(
                 "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
             }, ensure_ascii=False)
 
-        res = db.get_interface(target_name)
+        res = db.get_interface(
+            target_name,
+            member_name=target_member if target_member else None,
+            include_usecases=include_usecases,
+            max_usecases=max_usecases
+        )
         if not res:
             return json.dumps({
                 "isError": True,
@@ -89,6 +104,107 @@ def get_catia_interface(
             "isError": True,
             "error": f"Internal Server Error in get_catia_interface: {str(e)}"
         }, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_catia_usecases(
+    interface: str = "",
+    interface_name: str = "",
+    name: str = "",
+    member: str = "",
+    member_name: str = "",
+    limit: int = 5
+) -> str:
+    """
+    Retrieve targeted VBScript code examples for a CATIA V5 Interface or specific method/property.
+    
+    Args:
+        interface: Name of the interface (e.g., 'VisPropertySet', 'Selection', 'Pad')
+        interface_name: Alias for interface
+        name: Alias for interface
+        member: Optional method or property name (e.g., 'SetRealColor', 'Search')
+        member_name: Alias for member
+        limit: Max examples to return (default: 5)
+    """
+    try:
+        target_if = (interface or interface_name or name).strip()
+        target_mbr = (member or member_name).strip()
+
+        if not target_if:
+            return json.dumps({
+                "isError": True,
+                "error": "Missing interface name. Please provide 'interface' or 'interface_name'."
+            }, ensure_ascii=False)
+
+        db = get_db()
+        if not db:
+            return json.dumps({
+                "isError": True,
+                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
+            }, ensure_ascii=False)
+
+        results = db.get_usecases(target_if, member=target_mbr if target_mbr else None, limit=limit)
+        if not results:
+            desc = f"{target_if}.{target_mbr}" if target_mbr else target_if
+            return json.dumps({
+                "interface": target_if,
+                "member": target_mbr,
+                "total_examples": 0,
+                "message": f"No code examples found for '{desc}'."
+            }, indent=2, ensure_ascii=False)
+
+        return json.dumps({
+            "interface": target_if,
+            "member": target_mbr,
+            "total_examples": len(results),
+            "usecases": results
+        }, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.exception(f"Exception in get_catia_usecases: {e}")
+        return json.dumps({
+            "isError": True,
+            "error": f"Internal Server Error in get_catia_usecases: {str(e)}"
+        }, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_catia_search_syntax(
+    workbench: str = "",
+    query_type: str = "",
+    query: str = ""
+) -> str:
+    """
+    Retrieve official CATIA Selection.Search query syntax grammar, workbench prefixes, and practical examples.
+    Use this to construct valid query strings for catia.ActiveDocument.Selection.Search (e.g., 'CATPrtSearch.Pad,all').
+    
+    Args:
+        workbench: Optional workbench filter ('PartDesign', 'GenerativeShapeDesign', 'Drafting', 'Assembly', 'GenericTopology')
+        query_type: Optional geometry/feature type filter (e.g., 'Pad', 'Hole', 'Point', 'DrwText', 'Face')
+        query: Alias for query_type
+    """
+    try:
+        target_wb = workbench.strip()
+        target_qt = (query_type or query).strip()
+
+        db = get_db()
+        if not db:
+            return json.dumps({
+                "isError": True,
+                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
+            }, ensure_ascii=False)
+
+        res = db.get_search_syntax(
+            workbench=target_wb if target_wb else None,
+            query_type=target_qt if target_qt else None
+        )
+        return json.dumps(res, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.exception(f"Exception in get_catia_search_syntax: {e}")
+        return json.dumps({
+            "isError": True,
+            "error": f"Internal Server Error in get_catia_search_syntax: {str(e)}"
+        }, ensure_ascii=False)
+
 
 
 @mcp.tool()
