@@ -9,17 +9,22 @@ import sys
 from src.engine.db import CatalystDB
 
 def format_interface_markdown(data: dict) -> str:
+    if "member_not_found" in data:
+        return f"# {data['name']}\n> {data.get('message', 'Member not found.')}"
+
     md = []
     md.append(f"# {data['name']}")
-    md.append(f"**Framework**: `{data['framework']}`\n")
+    if data.get('framework'):
+        md.append(f"**Framework**: `{data['framework']}`\n")
     
     if data.get('inheritance_chain'):
         chain_str = " -> ".join([f"`{c}`" for c in data['inheritance_chain']])
         md.append(f"**Inheritance**: {chain_str}\n")
         
-    md.append(f"> {data['description']}\n")
+    if data.get('description'):
+        md.append(f"> {data['description']}\n")
     
-    if data['properties']:
+    if data.get('properties'):
         md.append("## Properties")
         md.append("| Name | Type | ReadOnly | Inherited From |")
         md.append("|---|---|---|---|")
@@ -29,16 +34,23 @@ def format_interface_markdown(data: dict) -> str:
             md.append(f"| `{p['name']}` | `{p['type']}` | {ro} | `{decl}` |")
         md.append("\n")
             
-    if data['methods']:
+    if data.get('methods'):
         md.append("## Methods")
         for m in data['methods']:
             params_str = ", ".join([f"{p['name']}: {p['type']}" for p in m["params"]])
             sig = f"{m['name']}({params_str}) -> {m['return_type']}"
             decl = f" *(Inherited from {m['declared_in']})*" if m['declared_in'] != data['name'] else ""
             md.append(f"### `{sig}`{decl}")
+            if m.get("python_mapping"):
+                py_map = m["python_mapping"]
+                if "pywin32_call" in py_map:
+                    md.append(f"> 🐍 **Python (pywin32)**: `{py_map['pywin32_call']}`")
+                if "safearray_note" in py_map:
+                    md.append(f"> ℹ️ *{py_map['safearray_note']}*")
+            md.append("")
         md.append("\n")
         
-    if data['usecases']:
+    if data.get('usecases'):
         md.append("## Examples")
         for uc in data['usecases']:
             md.append(f"**Context: {uc['context']}**")
@@ -74,9 +86,20 @@ def main():
     parser = argparse.ArgumentParser(description="CATalyst V5 Automation API CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
     
-    get_parser = subparsers.add_parser("get", help="Get full interface details")
-    get_parser.add_argument("name", type=str, help="Name of the interface (e.g., Pad)")
+    get_parser = subparsers.add_parser("get", help="Get full interface details or filter by specific member")
+    get_parser.add_argument("name", type=str, help="Name of the interface (e.g., Pad, VisPropertySet)")
+    get_parser.add_argument("--member", "-m", type=str, default=None, help="Filter to specific method or property")
+    get_parser.add_argument("--no-usecases", action="store_true", help="Omit code examples to save space")
     
+    usecase_parser = subparsers.add_parser("usecase", help="Get targeted VBScript examples for an interface")
+    usecase_parser.add_argument("interface", type=str, help="Name of the interface (e.g., VisPropertySet)")
+    usecase_parser.add_argument("--member", "-m", type=str, default=None, help="Specific method/property context")
+    usecase_parser.add_argument("--limit", "-l", type=int, default=5, help="Max examples to return")
+
+    syntax_parser = subparsers.add_parser("syntax", help="Get Selection.Search query syntax grammar")
+    syntax_parser.add_argument("--workbench", "-w", type=str, default=None, help="Workbench (e.g., PartDesign, GSD, Drafting)")
+    syntax_parser.add_argument("--type", "-t", type=str, default=None, help="Geometry type (e.g., Pad, Hole, Point)")
+
     search_parser = subparsers.add_parser("search", help="Search interfaces, enums, properties, and methods")
     search_parser.add_argument("query", type=str, help="Search query")
     search_parser.add_argument(
@@ -121,12 +144,33 @@ def main():
         sys.exit(1)
 
     if args.command == "get":
-        res = db.get_interface(args.name)
+        res = db.get_interface(
+            args.name,
+            member_name=args.member,
+            include_usecases=not args.no_usecases
+        )
         if res:
             print(format_interface_markdown(res))
         else:
             print(f"Interface '{args.name}' not found.")
             sys.exit(1)
+
+    elif args.command == "usecase":
+        ucs = db.get_usecases(args.interface, member=args.member, limit=args.limit)
+        if not ucs:
+            print(f"No usecases found for '{args.interface}'.")
+            sys.exit(0)
+        print(f"# Examples for `{args.interface}`" + (f" (Member: `{args.member}`)" if args.member else "") + "\n")
+        for uc in ucs:
+            print(f"### Context: `{uc['context']}`")
+            print("```vbscript")
+            print(uc['code'])
+            print("```\n")
+
+    elif args.command == "syntax":
+        import json
+        syntax_data = db.get_search_syntax(workbench=args.workbench, query_type=args.type)
+        print(json.dumps(syntax_data, indent=2, ensure_ascii=False))
 
     elif args.command == "enum":
         res = db.get_enum(name=args.name, value=args.value, member_name=args.member)
@@ -182,4 +226,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
