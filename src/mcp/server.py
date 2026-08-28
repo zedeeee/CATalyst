@@ -7,14 +7,17 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List
-from mcp.server.mcpserver import MCPServer
-
-from src.engine.db import CatalystDB
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-mcp = MCPServer("CATalyst", description="CATIA V5 Automation API Knowledge Base")
+try:
+    from mcp.server.fastmcp import FastMCP
+    mcp = FastMCP("CATalyst", description="CATIA V5 Automation API Knowledge Base")
+except ImportError:
+    try:
+        from mcp.server.mcpserver import MCPServer
+        mcp = MCPServer("CATalyst", description="CATIA V5 Automation API Knowledge Base")
+    except ImportError:
+        # Fallback if neither is directly named
+        from mcp.server import Server
+        mcp = Server("CATalyst")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DB_PATH = PROJECT_ROOT / "dist" / "catalyst.db"
@@ -34,7 +37,7 @@ def get_catia_interface(name: str) -> str:
     Use this when you need exact signatures to write automation scripts.
     
     Args:
-        name: The exact name of the interface (e.g., 'Pad', 'Prism', 'PartDocument')
+        name: The exact name of the interface (e.g., 'Pad', 'Prism', 'PartDocument', 'SystemConfiguration')
     """
     if not db:
         return "Error: Database not found. Please run the CATalyst build pipeline first."
@@ -45,24 +48,27 @@ def get_catia_interface(name: str) -> str:
         
     return json.dumps(res, indent=2, ensure_ascii=False)
 
+
 @mcp.tool()
-def search_catia_api(query: str, limit: int = 10) -> str:
+def search_catia_api(query: str, item_type: str = "all", limit: int = 15) -> str:
     """
-    Fuzzy search the CATIA V5 API by keywords.
-    Use this when you don't know the exact interface name or want to find related APIs.
+    Fuzzy search the CATIA V5 API across interfaces, enums, properties, and methods.
+    Use this when you don't know the exact interface name or want to find properties/methods.
     
     Args:
-        query: Search keywords (e.g., 'fillet', 'export', 'measure')
+        query: Search keywords (e.g., 'ServicePack', 'ActiveDocument', 'fillet', 'export')
+        item_type: Filter by 'all', 'interface', 'enum', 'property', or 'method'
         limit: Max results to return
     """
     if not db:
         return "Error: Database not found."
         
-    results = db.search(query, limit)
+    results = db.search(query, item_type=item_type, limit=limit)
     if not results:
-        return f"No matches found for '{query}'."
+        return f"No matches found for '{query}' (type={item_type})."
         
     return json.dumps(results, indent=2, ensure_ascii=False)
+
 
 @mcp.tool()
 def get_catia_enum(name: str) -> str:
@@ -81,5 +87,8 @@ def get_catia_enum(name: str) -> str:
         
     return json.dumps(res, indent=2, ensure_ascii=False)
 
+
 if __name__ == "__main__":
-    mcp.run()
+    if hasattr(mcp, "run"):
+        mcp.run()
+

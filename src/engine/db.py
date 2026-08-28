@@ -83,63 +83,99 @@ class CatalystDB:
             "values": json.loads(row["values_json"])
         }
 
-    def search(self, query: str, limit: int = 10) -> List[Dict[str, str]]:
+    def search(self, query: str, item_type: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
         """
-        Fuzzy searches across interfaces and enums by name or description.
-        Returns a list of brief matches.
+        Fuzzy searches across interfaces, enums, properties, and methods.
+        Supports filtering by item_type ('interface', 'enum', 'property', 'method', or None/'all').
         """
         cursor = self.conn.cursor()
         search_pattern = f"%{query}%"
-        
         results = []
         
-        # Search Interfaces
-        cursor.execute("""
-            SELECT 'interface' as type, name, description 
-            FROM interfaces 
-            WHERE name LIKE ? OR description LIKE ?
-            LIMIT ?
-        """, (search_pattern, search_pattern, limit))
-        
-        for row in cursor.fetchall():
-            results.append({
-                "type": row["type"],
-                "name": row["name"],
-                "description": row["description"]
-            })
-            
-        # Search Enums
-        cursor.execute("""
-            SELECT 'enum' as type, name, description 
-            FROM enums 
-            WHERE name LIKE ? OR description LIKE ? OR values_json LIKE ?
-            LIMIT ?
-        """, (search_pattern, search_pattern, search_pattern, limit))
-        
-        for row in cursor.fetchall():
-            results.append({
-                "type": row["type"],
-                "name": row["name"],
-                "description": row["description"]
-            })
-            
-        # Optional: Search Methods (Can be noisy, but useful for 'how do I add a line')
-        if len(results) < limit:
+        filter_type = item_type.lower() if item_type else "all"
+
+        # 1. Search Interfaces
+        if filter_type in ("all", "interface"):
             cursor.execute("""
-                SELECT 'method' as type, interface_name || '.' || name as name, '' as description 
-                FROM methods 
-                WHERE name LIKE ?
+                SELECT 'interface' as type, name, description, framework, '' as parent_interface, '' as data_type, 0 as readonly
+                FROM interfaces 
+                WHERE name LIKE ? OR description LIKE ?
                 LIMIT ?
-            """, (search_pattern, limit - len(results)))
-            
+            """, (search_pattern, search_pattern, limit))
             for row in cursor.fetchall():
                 results.append({
                     "type": row["type"],
                     "name": row["name"],
-                    "description": ""
+                    "description": row["description"] or "",
+                    "framework": row["framework"],
+                    "parent_interface": "",
+                    "data_type": "",
+                    "readonly": False
                 })
-        
-        return results
+
+        # 2. Search Enums
+        if filter_type in ("all", "enum") and (limit is None or len(results) < limit):
+            rem = limit - len(results) if limit else 50
+            cursor.execute("""
+                SELECT 'enum' as type, name, description, '' as framework, '' as parent_interface, '' as data_type, 0 as readonly
+                FROM enums 
+                WHERE name LIKE ? OR description LIKE ? OR values_json LIKE ?
+                LIMIT ?
+            """, (search_pattern, search_pattern, search_pattern, rem))
+            for row in cursor.fetchall():
+                results.append({
+                    "type": row["type"],
+                    "name": row["name"],
+                    "description": row["description"] or "",
+                    "framework": "",
+                    "parent_interface": "",
+                    "data_type": "",
+                    "readonly": False
+                })
+
+        # 3. Search Properties
+        if filter_type in ("all", "property") and (limit is None or len(results) < limit):
+            rem = limit - len(results) if limit else 50
+            cursor.execute("""
+                SELECT 'property' as type, interface_name || '.' || name as name, '' as description, '' as framework,
+                       interface_name as parent_interface, type as data_type, readonly
+                FROM properties
+                WHERE name LIKE ?
+                LIMIT ?
+            """, (search_pattern, rem))
+            for row in cursor.fetchall():
+                results.append({
+                    "type": row["type"],
+                    "name": row["name"],
+                    "description": "",
+                    "framework": "",
+                    "parent_interface": row["parent_interface"],
+                    "data_type": row["data_type"],
+                    "readonly": bool(row["readonly"])
+                })
+
+        # 4. Search Methods
+        if filter_type in ("all", "method") and (limit is None or len(results) < limit):
+            rem = limit - len(results) if limit else 50
+            cursor.execute("""
+                SELECT 'method' as type, interface_name || '.' || name as name, '' as description, '' as framework,
+                       interface_name as parent_interface, return_type as data_type, 0 as readonly
+                FROM methods
+                WHERE name LIKE ?
+                LIMIT ?
+            """, (search_pattern, rem))
+            for row in cursor.fetchall():
+                results.append({
+                    "type": row["type"],
+                    "name": row["name"],
+                    "description": "",
+                    "framework": "",
+                    "parent_interface": row["parent_interface"],
+                    "data_type": row["data_type"],
+                    "readonly": False
+                })
+
+        return results[:limit] if limit else results
 
     def close(self):
         """Closes the underlying SQLite database connection."""

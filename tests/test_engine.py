@@ -42,7 +42,28 @@ def test_search_interface(db):
     # At least one result should be the Pad interface
     assert any(r["name"] == "Pad" and r["type"] == "interface" for r in results)
 
-def test_search_enum_value(db):
-    results = db.search("catCounterboredHole")
+def test_search_property(db):
+    results = db.search("ServicePack", item_type="property")
     assert len(results) > 0
-    assert any(r["name"] == "CatHoleType" and r["type"] == "enum" for r in results)
+    assert any("ServicePack" in r["name"] and r["type"] == "property" for r in results)
+    
+    # Check property attributes
+    sp_prop = next(r for r in results if "SystemConfiguration.ServicePack" in r["name"])
+    assert sp_prop["data_type"] == "long"
+    assert sp_prop["readonly"] is True
+
+
+def test_search_type_filter(db):
+    # Only interfaces
+    res_if = db.search("Pad", item_type="interface")
+    assert all(r["type"] == "interface" for r in res_if)
+    
+    # Only properties
+    res_prop = db.search("Release", item_type="property")
+    assert all(r["type"] == "property" for r in res_prop)
+    
+    # Only methods
+    res_meth = db.search("GetProductNames", item_type="method")
+    assert all(r["type"] == "method" for r in res_meth)
+    assert any("SystemConfiguration.GetProductNames" in r["name"] for r in res_meth)
+
