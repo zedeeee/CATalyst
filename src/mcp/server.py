@@ -5,90 +5,212 @@ Exposes CATIA V5 Automation API knowledge as tools to AI Assistants via the Mode
 
 import json
 import logging
+import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Union
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("catalyst_mcp")
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.engine.db import CatalystDB
+
 try:
     from mcp.server.fastmcp import FastMCP
     mcp = FastMCP("CATalyst", description="CATIA V5 Automation API Knowledge Base")
-except ImportError:
+except (ImportError, ModuleNotFoundError):
     try:
         from mcp.server.mcpserver import MCPServer
         mcp = MCPServer("CATalyst", description="CATIA V5 Automation API Knowledge Base")
     except ImportError:
-        # Fallback if neither is directly named
         from mcp.server import Server
         mcp = Server("CATalyst")
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DB_PATH = PROJECT_ROOT / "dist" / "catalyst.db"
+_db_instance: Optional[CatalystDB] = None
 
-try:
-    db = CatalystDB(DB_PATH)
-except Exception as e:
-    logger.error(f"Failed to initialize CatalystDB: {e}")
-    db = None
+
+def get_db() -> Optional[CatalystDB]:
+    """Dynamically initializes or retrieves the CatalystDB connection."""
+    global _db_instance
+    if _db_instance is not None:
+        return _db_instance
+    try:
+        _db_instance = CatalystDB()
+        return _db_instance
+    except Exception as e:
+        logger.error(f"Failed to connect to CatalystDB: {e}")
+        return None
 
 
 @mcp.tool()
-def get_catia_interface(name: str) -> str:
+def get_catia_interface(
+    name: str = "",
+    interface_name: str = "",
+    interface: str = ""
+) -> str:
     """
     Retrieve full documentation for a specific CATIA V5 COM Interface.
     Includes inherited properties, methods, and VBScript examples.
-    Use this when you need exact signatures to write automation scripts.
     
     Args:
-        name: The exact name of the interface (e.g., 'Pad', 'Prism', 'PartDocument', 'SystemConfiguration')
+        name: Name of the interface (e.g., 'Pad', 'Prism', 'PartDocument', 'SystemConfiguration')
+        interface_name: Alias for name
+        interface: Alias for name
     """
-    if not db:
-        return "Error: Database not found. Please run the CATalyst build pipeline first."
-        
-    res = db.get_interface(name)
-    if not res:
-        return f"Error: Interface '{name}' not found in CATIA V5 documentation."
-        
-    return json.dumps(res, indent=2, ensure_ascii=False)
+    try:
+        target_name = (name or interface_name or interface).strip()
+        if not target_name:
+            return json.dumps({
+                "isError": True,
+                "error": "Missing interface name. Please provide 'name' or 'interface_name'."
+            }, ensure_ascii=False)
+
+        db = get_db()
+        if not db:
+            return json.dumps({
+                "isError": True,
+                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
+            }, ensure_ascii=False)
+
+        res = db.get_interface(target_name)
+        if not res:
+            return json.dumps({
+                "isError": True,
+                "error": f"Interface '{target_name}' not found in CATIA V5 documentation."
+            }, ensure_ascii=False)
+
+        return json.dumps(res, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.exception(f"Exception in get_catia_interface: {e}")
+        return json.dumps({
+            "isError": True,
+            "error": f"Internal Server Error in get_catia_interface: {str(e)}"
+        }, ensure_ascii=False)
 
 
 @mcp.tool()
-def search_catia_api(query: str, item_type: str = "all", limit: int = 15) -> str:
+def search_catia_api(
+    query: str = "",
+    keyword: str = "",
+    item_type: str = "all",
+    type: str = "",
+    limit: int = 15
+) -> str:
     """
     Fuzzy search the CATIA V5 API across interfaces, enums, properties, and methods.
-    Use this when you don't know the exact interface name or want to find properties/methods.
+    Supports reverse-searching host interfaces for properties/methods (e.g., search 'PartNumber' to find Product).
     
     Args:
-        query: Search keywords (e.g., 'ServicePack', 'ActiveDocument', 'fillet', 'export')
+        query: Search keywords (e.g., 'ServicePack', 'ActiveDocument', 'PartNumber', 'fillet')
+        keyword: Alias for query
         item_type: Filter by 'all', 'interface', 'enum', 'property', or 'method'
+        type: Alias for item_type
         limit: Max results to return
     """
-    if not db:
-        return "Error: Database not found."
+    try:
+        search_query = (query or keyword).strip()
+        if not search_query:
+            return json.dumps({
+                "isError": True,
+                "error": "Missing search query. Please provide 'query' or 'keyword'."
+            }, ensure_ascii=False)
+
+        filter_type = (item_type if item_type != "all" else (type or "all")).strip()
+
+        db = get_db()
+        if not db:
+            return json.dumps({
+                "isError": True,
+                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
+            }, ensure_ascii=False)
+
+        results = db.search(search_query, item_type=filter_type, limit=limit)
         
-    results = db.search(query, item_type=item_type, limit=limit)
-    if not results:
-        return f"No matches found for '{query}' (type={item_type})."
-        
-    return json.dumps(results, indent=2, ensure_ascii=False)
+        # If searching for property/method or single member query, check host interface aggregation
+        reverse_hosts = None
+        if filter_type in ("all", "property", "method"):
+            member_lookup = db.get_interfaces_by_member(search_query, member_type=filter_type if filter_type != "all" else None)
+            if member_lookup["total_host_interfaces"] > 0:
+                reverse_hosts = member_lookup
+
+        payload: Dict[str, Any] = {
+            "query": search_query,
+            "filter_type": filter_type,
+            "total_matches": len(results),
+            "results": results
+        }
+        if reverse_hosts:
+            payload["host_interfaces_summary"] = reverse_hosts
+
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.exception(f"Exception in search_catia_api: {e}")
+        return json.dumps({
+            "isError": True,
+            "error": f"Internal Server Error in search_catia_api: {str(e)}"
+        }, ensure_ascii=False)
 
 
 @mcp.tool()
-def get_catia_enum(name: str) -> str:
+def get_catia_enum(
+    name: str = "",
+    enum_name: str = "",
+    enum: str = "",
+    value: Optional[Union[int, str]] = None,
+    member_name: str = "",
+    member: str = ""
+) -> str:
     """
     Retrieve details and possible values for a CATIA V5 Enumeration.
+    Supports bidirectional lookup (by enum name, numeric value/index, or member name).
     
     Args:
-        name: The exact name of the enum (e.g., 'CatHoleType')
+        name: The name of the enum (e.g., 'CatProductSource') or member (e.g., 'catProductMade')
+        enum_name: Alias for name
+        enum: Alias for name
+        value: Numeric index/value to reverse-lookup (e.g., 0, 1)
+        member_name: Exact enum member name to reverse-lookup (e.g., 'catProductMade')
+        member: Alias for member_name
     """
-    if not db:
-        return "Error: Database not found."
-        
-    res = db.get_enum(name)
-    if not res:
-        return f"Error: Enum '{name}' not found."
-        
-    return json.dumps(res, indent=2, ensure_ascii=False)
+    try:
+        target_name = (name or enum_name or enum).strip()
+        target_member = (member_name or member).strip()
+
+        if not target_name and not target_member and value is None:
+            return json.dumps({
+                "isError": True,
+                "error": "Missing parameters. Please provide 'name', 'enum_name', 'member_name', or 'value'."
+            }, ensure_ascii=False)
+
+        db = get_db()
+        if not db:
+            return json.dumps({
+                "isError": True,
+                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
+            }, ensure_ascii=False)
+
+        res = db.get_enum(name=target_name, value=value, member_name=target_member)
+        if not res:
+            query_desc = target_name or target_member or f"value={value}"
+            return json.dumps({
+                "isError": True,
+                "error": f"Enum '{query_desc}' not found."
+            }, ensure_ascii=False)
+
+        return json.dumps(res, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.exception(f"Exception in get_catia_enum: {e}")
+        return json.dumps({
+            "isError": True,
+            "error": f"Internal Server Error in get_catia_enum: {str(e)}"
+        }, ensure_ascii=False)
 
 
 if __name__ == "__main__":
     if hasattr(mcp, "run"):
         mcp.run()
+
 
