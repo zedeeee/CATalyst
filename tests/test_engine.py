@@ -46,6 +46,37 @@ def test_get_interface_exact(db):
     assert "GetDirection" in method_names # Inherited from Prism
     assert "GetItem" in method_names # Inherited from AnyObject
 
+def test_get_interface_member_filter(db):
+    res = db.get_interface("Pad", member_name="GetDirection")
+    assert res is not None
+    assert res["name"] == "Pad"
+    assert len(res["methods"]) == 1
+    assert res["methods"][0]["name"] == "GetDirection"
+    assert len(res["properties"]) == 0
+
+def test_get_interface_no_usecases(db):
+    res = db.get_interface("Pad", include_usecases=False)
+    assert res is not None
+    assert len(res["usecases"]) == 0
+
+def test_get_usecases_standalone(db):
+    ucs = db.get_usecases("VisPropertySet", member="GetRealColor")
+    assert len(ucs) > 0
+    assert all("GetRealColor" in u["context"] or "GetRealColor" in u["code"] for u in ucs)
+
+def test_get_search_syntax(db):
+    syntax = db.get_search_syntax(workbench="PartDesign")
+    assert syntax["prefix"] == "CATPrtSearch"
+    assert len(syntax["types"]) > 0
+    assert any(t["type"] == "Pad" for t in syntax["types"])
+
+def test_python_mapping_hints(db):
+    vis_res = db.get_interface("VisPropertySet", member_name="GetRealColor")
+    assert vis_res and len(vis_res["methods"]) == 1
+    method_data = vis_res["methods"][0]
+    assert "python_mapping" in method_data
+    assert "pywin32_call" in method_data["python_mapping"]
+
 def test_get_interface_not_found(db):
     res = db.get_interface("NonExistentInterface123")
     assert res is None

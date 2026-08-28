@@ -25,6 +25,37 @@ def test_mcp_get_interface_alias():
     assert data2["name"] == "Pad"
 
 
+def test_mcp_get_interface_member_filter():
+    res_str = mcp_server.get_catia_interface(interface_name="Pad", member_name="GetDirection")
+    data = json.loads(res_str)
+    assert not data.get("isError")
+    assert data["name"] == "Pad"
+    assert len(data["methods"]) == 1
+    assert data["methods"][0]["name"] == "GetDirection"
+    assert len(data["properties"]) == 0
+
+
+def test_mcp_get_usecases():
+    res_str = mcp_server.get_catia_usecases(interface="VisPropertySet", member="GetRealColor")
+    data = json.loads(res_str)
+    assert not data.get("isError")
+    assert data["interface"] == "VisPropertySet"
+    assert data["total_examples"] > 0
+
+
+def test_mcp_get_search_syntax():
+    res_str = mcp_server.get_catia_search_syntax(workbench="PartDesign")
+    data = json.loads(res_str)
+    assert not data.get("isError")
+    assert data["prefix"] == "CATPrtSearch"
+
+    res_str2 = mcp_server.get_catia_search_syntax(query_type="Hole")
+    data2 = json.loads(res_str2)
+    assert not data2.get("isError")
+    assert "matched_types" in data2
+
+
+
 def test_mcp_get_interface_not_found():
     res_str = mcp_server.get_catia_interface(name="NonExistentInterface999")
     data = json.loads(res_str)
