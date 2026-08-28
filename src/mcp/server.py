@@ -5,23 +5,26 @@ Exposes CATIA V5 Automation API knowledge as tools to AI Assistants via the Mode
 
 import json
 import logging
-import sys
+from pathlib import Path
 from typing import Any, Dict, List
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from src.engine.db import CatalystDB
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP("CATalyst", description="CATIA V5 Automation API Knowledge Base")
+mcp = MCPServer("CATalyst", description="CATIA V5 Automation API Knowledge Base")
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+DB_PATH = PROJECT_ROOT / "dist" / "catalyst.db"
 
 try:
-    db = CatalystDB("dist/catalyst.db")
+    db = CatalystDB(DB_PATH)
 except Exception as e:
     logger.error(f"Failed to initialize CatalystDB: {e}")
-    # Don't exit immediately, let the tools handle the error if the DB is missing
     db = None
+
 
 @mcp.tool()
 def get_catia_interface(name: str) -> str:
