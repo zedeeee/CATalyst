@@ -69,20 +69,47 @@ def main():
     get_parser = subparsers.add_parser("get", help="Get full interface details")
     get_parser.add_argument("name", type=str, help="Name of the interface (e.g., Pad)")
     
-    search_parser = subparsers.add_parser("search", help="Search interfaces and enums")
+    search_parser = subparsers.add_parser("search", help="Search interfaces, enums, properties, and methods")
     search_parser.add_argument("query", type=str, help="Search query")
-    
+    search_parser.add_argument(
+        "--type",
+        "-t",
+        choices=["all", "interface", "enum", "property", "method"],
+        default="all",
+        help="Filter results by item type",
+    )
+    search_parser.add_argument(
+        "--limit",
+        "-l",
+        type=int,
+        default=20,
+        help="Max results to return",
+    )
+
     enum_parser = subparsers.add_parser("enum", help="Get enum details")
     enum_parser.add_argument("name", type=str, help="Name of the enum (e.g., CatHoleType)")
-    
+
+    info_parser = subparsers.add_parser("info", help="Get diagnostic report of running CATIA instance")
+    info_parser.add_argument("--clsid", type=str, default=None, help="Custom CLSID for ROT bridge connection")
+
     args = parser.parse_args()
-    
+
+    if args.command == "info":
+        try:
+            from src.client import CatiaClient
+            client = CatiaClient(clsid=args.clsid)
+            print(client.get_diagnostic_report())
+        except Exception as e:
+            print(f"Error connecting to CATIA: {e}")
+            sys.exit(1)
+        return
+
     try:
         db = CatalystDB()
     except FileNotFoundError as e:
         print(f"Error: {e}")
         sys.exit(1)
-        
+
     if args.command == "get":
         res = db.get_interface(args.name)
         if res:
@@ -90,7 +117,7 @@ def main():
         else:
             print(f"Interface '{args.name}' not found.")
             sys.exit(1)
-            
+
     elif args.command == "enum":
         res = db.get_enum(args.name)
         if res:
@@ -98,21 +125,38 @@ def main():
         else:
             print(f"Enum '{args.name}' not found.")
             sys.exit(1)
-            
+
     elif args.command == "search":
-        results = db.search(args.query)
+        results = db.search(args.query, item_type=args.type, limit=args.limit)
         if not results:
             print("No matches found.")
             sys.exit(0)
-            
+
         print(f"Found {len(results)} matches:\n")
         for r in results:
-            print(f"- [{r['type'].upper()}] **{r['name']}**")
-            if r['description']:
-                desc = r['description'].replace('\n', ' ').strip()
-                if len(desc) > 100:
-                    desc = desc[:100] + "..."
-                print(f"  > {desc}")
+            item_type = r["type"].upper()
+            if item_type == "PROPERTY":
+                ro_tag = " [ReadOnly]" if r.get("readonly") else ""
+                type_tag = f" -> `{r['data_type']}`" if r.get("data_type") else ""
+                print(f"- [{item_type}] **{r['name']}**{type_tag}{ro_tag}")
+            elif item_type == "METHOD":
+                ret_tag = f" -> `{r['data_type']}`" if r.get("data_type") else ""
+                print(f"- [{item_type}] **{r['name']}**{ret_tag}")
+            elif item_type == "INTERFACE":
+                fw = f" (`{r.get('framework')}`)" if r.get("framework") else ""
+                print(f"- [{item_type}] **{r['name']}**{fw}")
+                if r.get("description"):
+                    desc = r["description"].replace("\n", " ").strip()
+                    if len(desc) > 100:
+                        desc = desc[:100] + "..."
+                    print(f"  > {desc}")
+            elif item_type == "ENUM":
+                print(f"- [{item_type}] **{r['name']}**")
+                if r.get("description"):
+                    desc = r["description"].replace("\n", " ").strip()
+                    if len(desc) > 100:
+                        desc = desc[:100] + "..."
+                    print(f"  > {desc}")
 
 if __name__ == "__main__":
     main()
