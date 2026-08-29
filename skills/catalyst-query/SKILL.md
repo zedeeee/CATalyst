@@ -45,7 +45,20 @@ If you need the exact integer or constant names for an enum (e.g., `CatHoleType`
 uv run python catalyst_cli.py enum CatHoleType
 ```
 
+**4. Search Community Recipes & Practical Code:**
+If you need real-world industrial implementation patterns (e.g. batch exporting STEP, BOM extraction, drawing title blocks):
+```bash
+uv run python catalyst_cli.py recipe "export step"
+```
+
+**5. Get Interface Use Cases:**
+To retrieve official tutorials or community examples for a specific interface:
+```bash
+uv run python catalyst_cli.py usecase Pad --source official
+```
+
 ## Rules for CATIA V5 Automation Generation
+- **Pure win32com Target**: Generate clean Python code targeting `win32com.client` unless the user explicitly requests VBScript/VBA.
 - **Never Guess**: Do not invent properties or methods. If you cannot find the API via this skill, inform the user that it might not be exposed to Automation or you need a different keyword.
 - **Respect Inheritance**: The `get` command automatically merges inherited properties. You can safely call any method listed under "Methods", even if the "Inherited From" column shows it belongs to a parent class.
 - **Type Checking**: Pay attention to the expected types (e.g., `CATBSTR` is a string, `CATSafeArrayVariant` is usually a tuple/list in Python or Array in VBS).
