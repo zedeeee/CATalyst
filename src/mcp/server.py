@@ -26,8 +26,16 @@ except (ImportError, ModuleNotFoundError):
         from mcp.server.mcpserver import MCPServer
         mcp = MCPServer("CATalyst", description="CATIA V5 Automation API Knowledge Base")
     except ImportError:
-        from mcp.server import Server
-        mcp = Server("CATalyst")
+        try:
+            from mcp.server import Server
+            mcp = Server("CATalyst")
+        except ImportError:
+            class DummyMCP:
+                def tool(self, *args, **kwargs):
+                    def decorator(func):
+                        return func
+                    return decorator
+            mcp = DummyMCP()
 
 _db_instance: Optional[CatalystDB] = None
 
@@ -113,28 +121,29 @@ def get_catia_usecases(
     name: str = "",
     member: str = "",
     member_name: str = "",
+    source: str = "all",
+    query: str = "",
     limit: int = 5
 ) -> str:
     """
-    Retrieve targeted VBScript code examples for a CATIA V5 Interface or specific method/property.
+    Retrieve code examples and practical recipes for a CATIA V5 Interface, method, or scenario intent.
+    Supports dual-track sources (Official tutorials and Curated Community Recipes).
     
     Args:
-        interface: Name of the interface (e.g., 'VisPropertySet', 'Selection', 'Pad')
+        interface: Name of the interface (e.g., 'VisPropertySet', 'Selection', 'Pad', 'Product')
         interface_name: Alias for interface
         name: Alias for interface
         member: Optional method or property name (e.g., 'SetRealColor', 'Search')
         member_name: Alias for member
+        source: Filter by source: 'all' (default: official first, then community), 'official', or 'community'
+        query: Optional intent or scenario keywords (e.g., 'export step', 'bounding box')
         limit: Max examples to return (default: 5)
     """
     try:
         target_if = (interface or interface_name or name).strip()
         target_mbr = (member or member_name).strip()
-
-        if not target_if:
-            return json.dumps({
-                "isError": True,
-                "error": "Missing interface name. Please provide 'interface' or 'interface_name'."
-            }, ensure_ascii=False)
+        target_src = (source or "all").strip().lower()
+        target_q = query.strip()
 
         db = get_db()
         if not db:
@@ -143,12 +152,29 @@ def get_catia_usecases(
                 "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
             }, ensure_ascii=False)
 
-        results = db.get_usecases(target_if, member=target_mbr if target_mbr else None, limit=limit)
+        if not target_if and target_q:
+            # If no interface name provided, search recipes across entire DB by intent query
+            results = db.search_recipes(query=target_q, source=target_src, limit=limit)
+        elif target_if:
+            results = db.get_usecases(
+                target_if,
+                member=target_mbr if target_mbr else None,
+                source=target_src,
+                query=target_q if target_q else None,
+                limit=limit
+            )
+        else:
+            return json.dumps({
+                "isError": True,
+                "error": "Missing parameters. Please provide 'interface' or scenario 'query'."
+            }, ensure_ascii=False)
+
         if not results:
-            desc = f"{target_if}.{target_mbr}" if target_mbr else target_if
+            desc = f"{target_if}.{target_mbr}" if (target_if and target_mbr) else (target_if or target_q)
             return json.dumps({
                 "interface": target_if,
                 "member": target_mbr,
+                "source_filter": target_src,
                 "total_examples": 0,
                 "message": f"No code examples found for '{desc}'."
             }, indent=2, ensure_ascii=False)
@@ -156,6 +182,7 @@ def get_catia_usecases(
         return json.dumps({
             "interface": target_if,
             "member": target_mbr,
+            "source_filter": target_src,
             "total_examples": len(results),
             "usecases": results
         }, indent=2, ensure_ascii=False)
@@ -164,6 +191,65 @@ def get_catia_usecases(
         return json.dumps({
             "isError": True,
             "error": f"Internal Server Error in get_catia_usecases: {str(e)}"
+        }, ensure_ascii=False)
+
+
+@mcp.tool()
+def search_catia_recipes(
+    query: str = "",
+    keyword: str = "",
+    workbench: str = "",
+    source: str = "all",
+    limit: int = 5
+) -> str:
+    """
+    Search practical industrial recipes and implementation patterns across CATIA workbenches by natural language intent.
+    Ideal for finding end-to-end Python win32com scripts (e.g. batch export STEP, extract BOM, title block update).
+    
+    Args:
+        query: Intent or scenario keywords (e.g., 'export step', 'bounding box', 'bom mass', 'title block')
+        keyword: Alias for query
+        workbench: Optional workbench filter ('Assembly', 'PartDesign', 'Drafting', 'GenerativeShapeDesign')
+        source: Filter by 'all', 'official', or 'community' (default: 'all')
+        limit: Maximum recipes to return (default: 5)
+    """
+    try:
+        search_query = (query or keyword).strip()
+        if not search_query:
+            return json.dumps({
+                "isError": True,
+                "error": "Missing query. Please provide scenario keywords (e.g., 'export step', 'bounding box')."
+            }, ensure_ascii=False)
+
+        target_wb = workbench.strip() if workbench else None
+        target_src = (source or "all").strip().lower()
+
+        db = get_db()
+        if not db:
+            return json.dumps({
+                "isError": True,
+                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
+            }, ensure_ascii=False)
+
+        results = db.search_recipes(
+            query=search_query,
+            workbench=target_wb,
+            source=target_src,
+            limit=limit
+        )
+
+        return json.dumps({
+            "query": search_query,
+            "workbench_filter": target_wb,
+            "source_filter": target_src,
+            "total_matches": len(results),
+            "recipes": results
+        }, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.exception(f"Exception in search_catia_recipes: {e}")
+        return json.dumps({
+            "isError": True,
+            "error": f"Internal Server Error in search_catia_recipes: {str(e)}"
         }, ensure_ascii=False)
 
 
