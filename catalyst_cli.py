@@ -195,9 +195,11 @@ def main():
                 prov = uc['provenance']
                 if isinstance(prov, dict):
                     src_ref = prov.get("source_ref") or prov.get("repo") or prov.get("community")
+                    src_url = prov.get("source_url")
                     lic = prov.get("license", "MIT")
                     if src_ref:
-                        print(f"**Provenance**: `{src_ref}` (License: `{lic}`)")
+                        ref_display = f"[{src_ref}]({src_url})" if src_url else f"`{src_ref}`"
+                        print(f"**Provenance**: {ref_display} (License: `{lic}`)")
             if uc.get("context"):
                 print(f"> {uc['context']}\n")
             lang = "python" if "win32com" in uc["code"] or "import " in uc["code"] else "vbscript"
@@ -229,9 +231,11 @@ def main():
                 prov = rc['provenance']
                 if isinstance(prov, dict):
                     src_ref = prov.get("source_ref") or prov.get("repo") or prov.get("community")
+                    src_url = prov.get("source_url")
                     lic = prov.get("license", "MIT")
                     if src_ref:
-                        print(f"- **Provenance**: `{src_ref}` (License: `{lic}`)")
+                        ref_display = f"[{src_ref}]({src_url})" if src_url else f"`{src_ref}`"
+                        print(f"- **Provenance**: {ref_display} (License: `{lic}`)")
             if rc.get("context"):
                 print(f"\n> {rc['context']}\n")
             lang = "python" if "win32com" in rc["code"] or "import " in rc["code"] else "vbscript"
