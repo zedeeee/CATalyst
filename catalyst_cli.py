@@ -101,10 +101,18 @@ def main():
     get_parser.add_argument("--member", "-m", type=str, default=None, help="Filter to specific method or property")
     get_parser.add_argument("--no-usecases", action="store_true", help="Omit code examples to save space")
     
-    usecase_parser = subparsers.add_parser("usecase", help="Get targeted VBScript examples for an interface")
-    usecase_parser.add_argument("interface", type=str, help="Name of the interface (e.g., VisPropertySet)")
+    usecase_parser = subparsers.add_parser("usecase", help="Get targeted examples for an interface (Official / Community)")
+    usecase_parser.add_argument("interface", type=str, help="Name of the interface (e.g., Pad, Product, VisPropertySet)")
     usecase_parser.add_argument("--member", "-m", type=str, default=None, help="Specific method/property context")
+    usecase_parser.add_argument("--source", "-s", choices=["all", "official", "community"], default="all", help="Filter by source")
+    usecase_parser.add_argument("--query", "-q", type=str, default=None, help="Optional scenario keywords")
     usecase_parser.add_argument("--limit", "-l", type=int, default=5, help="Max examples to return")
+
+    recipe_parser = subparsers.add_parser("recipe", help="Search community industrial recipes by scenario intent")
+    recipe_parser.add_argument("query", type=str, help="Intent or scenario keywords (e.g., 'export step', 'bounding box')")
+    recipe_parser.add_argument("--workbench", "-w", type=str, default=None, help="Workbench filter (e.g., PartDesign, Assembly, Drafting)")
+    recipe_parser.add_argument("--source", "-s", choices=["all", "official", "community"], default="all", help="Source filter")
+    recipe_parser.add_argument("--limit", "-l", type=int, default=5, help="Max recipes to return")
 
     syntax_parser = subparsers.add_parser("syntax", help="Get Selection.Search query syntax grammar")
     syntax_parser.add_argument("--workbench", "-w", type=str, default=None, help="Workbench (e.g., PartDesign, GSD, Drafting)")
@@ -166,15 +174,69 @@ def main():
             sys.exit(1)
 
     elif args.command == "usecase":
-        ucs = db.get_usecases(args.interface, member=args.member, limit=args.limit)
+        ucs = db.get_usecases(
+            args.interface,
+            member=args.member,
+            source=args.source,
+            query=args.query,
+            limit=args.limit
+        )
         if not ucs:
-            print(f"No usecases found for '{args.interface}'.")
+            print(f"No usecases found for '{args.interface}' (Source: {args.source}).")
             sys.exit(0)
         print(f"# Examples for `{args.interface}`" + (f" (Member: `{args.member}`)" if args.member else "") + "\n")
         for uc in ucs:
-            print(f"### Context: `{uc['context']}`")
-            print("```vbscript")
+            source_tag = "[Official]" if uc.get("source") == "official" else "[Community Reference]"
+            title_str = f" - {uc.get('title')}" if uc.get("title") else ""
+            print(f"### {source_tag}{title_str}")
+            if uc.get("workbench"):
+                print(f"**Workbench**: `{uc['workbench']}`")
+            if uc.get("provenance"):
+                prov = uc['provenance']
+                if isinstance(prov, dict):
+                    src_ref = prov.get("source_ref") or prov.get("repo") or prov.get("community")
+                    lic = prov.get("license", "MIT")
+                    if src_ref:
+                        print(f"**Provenance**: `{src_ref}` (License: `{lic}`)")
+            if uc.get("context"):
+                print(f"> {uc['context']}\n")
+            lang = "python" if "win32com" in uc["code"] or "import " in uc["code"] else "vbscript"
+            print(f"```{lang}")
             print(uc['code'])
+            print("```\n")
+
+    elif args.command == "recipe":
+        recipes = db.search_recipes(
+            query=args.query,
+            workbench=args.workbench,
+            source=args.source,
+            limit=args.limit
+        )
+        if not recipes:
+            print(f"No recipes found matching '{args.query}'.")
+            sys.exit(0)
+        print(f"# Practical Recipes matching `{args.query}`\n")
+        for rc in recipes:
+            source_tag = "[Official Tutorial]" if rc.get("source") == "official" else "[Community Recipe]"
+            title = rc.get("title") or rc.get("context") or "Untitled Recipe"
+            print(f"## {source_tag} {title}")
+            print(f"- **Interface**: `{rc.get('interface', 'General')}`")
+            if rc.get("workbench"):
+                print(f"- **Workbench**: `{rc['workbench']}`")
+            if rc.get("tags"):
+                print(f"- **Tags**: `{rc['tags']}`")
+            if rc.get("provenance"):
+                prov = rc['provenance']
+                if isinstance(prov, dict):
+                    src_ref = prov.get("source_ref") or prov.get("repo") or prov.get("community")
+                    lic = prov.get("license", "MIT")
+                    if src_ref:
+                        print(f"- **Provenance**: `{src_ref}` (License: `{lic}`)")
+            if rc.get("context"):
+                print(f"\n> {rc['context']}\n")
+            lang = "python" if "win32com" in rc["code"] or "import " in rc["code"] else "vbscript"
+            print(f"```{lang}")
+            print(rc['code'])
             print("```\n")
 
     elif args.command == "syntax":

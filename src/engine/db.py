@@ -254,148 +254,150 @@ class CatalystDB:
         self,
         interface: str,
         member: Optional[str] = None,
+        source: str = "all",
+        query: Optional[str] = None,
         limit: int = 5
     ) -> List[Dict[str, Any]]:
         """
-        Retrieves targeted code usecases for an interface and optional member.
-        """
+        Retrieves targeted code usecases/recipes for an interface and optional member/query.
+        Official examples from SQLite DB + Community recipes dynamically loaded from data/recipes/.
         if not interface:
             return []
-        cursor = self.conn.cursor()
-        target_if = interface.strip()
-        target_mbr = member.strip() if member else None
+        target_if = interface.strip().lower()
+        target_mbr = member.strip().lower() if member else None
+        target_q = query.strip().lower() if query else None
+        target_src = source.strip().lower() if source else "all"
+        results: List[Dict[str, Any]] = []
 
-        if target_mbr:
-            cursor.execute(
-                "SELECT interface_name, context, code FROM usecases WHERE interface_name = ? COLLATE NOCASE AND context = ? COLLATE NOCASE LIMIT ?",
-                (target_if, target_mbr, limit)
-            )
-            rows = cursor.fetchall()
-            if not rows:
-                cursor.execute(
-                    "SELECT interface_name, context, code FROM usecases WHERE interface_name = ? COLLATE NOCASE AND (context LIKE ? OR code LIKE ?) LIMIT ?",
-                    (target_if, f"%{target_mbr}%", f"%{target_mbr}%", limit)
-                )
-                rows = cursor.fetchall()
-        else:
-            cursor.execute(
-                "SELECT interface_name, context, code FROM usecases WHERE interface_name = ? COLLATE NOCASE LIMIT ?",
-                (target_if, limit)
-            )
-            rows = cursor.fetchall()
+        # 1. Fetch Official Usecases from SQLite DB
+        if target_src in ("all", "official"):
+            cursor = self.conn.cursor()
+            cursor.execute("PRAGMA table_info(usecases)")
+            columns = [r[1] for r in cursor.fetchall()]
+            params: List[Any] = [interface.strip()]
 
-        return [{"interface": r["interface_name"], "context": r["context"], "code": r["code"]} for r in rows]
+            if has_extended:
+                where_clauses.append("(source = 'official' OR source IS NULL)")
+
+            if target_mbr:
+                params.extend([member.strip(), f"%{member.strip()}%", f"%{member.strip()}%"])
+
+            if target_q:
+                        where_clauses.append("(context LIKE ? OR code LIKE ?)")
+                        params.extend([f"%{w}%", f"%{w}%"])
+
+            where_sql = " AND ".join(where_clauses)
+
+            cursor.execute(query_sql, params)
+            rows = cursor.fetchall()
+            for r in rows:
+                    "source": "official",
+                    "title": r["title"] if (has_extended and "title" in r.keys() and r["title"]) else f"{r['interface_name']} Official Example ({r['context']})",
+                    "workbench": r["workbench"] if (has_extended and "workbench" in r.keys()) else "",
+                    "tags": r["tags"] if (has_extended and "tags" in r.keys()) else "",
+                    "provenance": {"source": "V5Automation.chm"},
+                    "context": r["context"],
+                    "code": r["code"]
+                }
+                results.append(entry)
+
+        # 2. Fetch Community Recipes dynamically from data/recipes/
+        if target_src in ("all", "community") and len(results) < limit:
+                    continue
+                if target_mbr and (target_mbr not in rc["context"].lower() and target_mbr not in rc["code"].lower() and target_mbr not in rc["title"].lower()):
+                    continue
+        return results[:limit]
+
+    def search_recipes(
+        source: str = "all",
+        limit: int = 5
+    ) -> List[Dict[str, Any]]:
+            cursor = self.conn.cursor()
+            cursor.execute("PRAGMA table_info(usecases)")
+            columns = [r[1] for r in cursor.fetchall()]
+            has_extended = "source" in columns
+
+            where_clauses = []
+            params: List[Any] = []
+
+            if has_extended:
+                where_clauses.append("(source = 'official' OR source IS NULL)")
+
+            if has_extended and search_wb:
+                where_clauses.append("workbench = ? COLLATE NOCASE")
+                params.append(workbench.strip())
+
+            q_words = [w for w in search_q.split() if w]
+            for w in q_words:
+                    where_clauses.append("(title LIKE ? OR tags LIKE ? OR context LIKE ? OR interface_name LIKE ? OR code LIKE ?)")
+                    params.extend([f"%{w}%", f"%{w}%", f"%{w}%", f"%{w}%", f"%{w}%"])
+                else:
+                    where_clauses.append("(interface_name LIKE ? OR context LIKE ? OR code LIKE ?)")
+                    params.extend([f"%{w}%", f"%{w}%", f"%{w}%"])
+
+            where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+            query_sql = f"SELECT * FROM usecases WHERE {where_sql} ORDER BY rowid ASC LIMIT ?"
+
+        # 2. Community Recipes Search from data/recipes/
+            comm_recipes = self._load_community_recipes()
+            q_words = [w for w in search_q.split() if w]
+            for rc in comm_recipes:
+                if search_wb and search_wb not in rc["workbench"].lower():
+                    continue
+                text_blob = f"{rc['interface']} {rc['title']} {rc['tags']} {rc['context']} {rc['code']}".lower()
+                if all(w in text_blob for w in q_words):
+                    results.append(rc)
+                    if len(results) >= limit:
+                        break
+
+        return results[:limit]
 
     def get_search_syntax(
         self,
         workbench: Optional[str] = None,
-        query_type: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Retrieves Selection.Search query syntax grammar for CATIA workbenches and geometry types.
         """
-        return get_search_grammar(workbench=workbench, query_type=query_type)
-
-    def get_enum(
-        self,
+        prefix_mapping = {
+            "partdesign": "CATPrtSearch",
         name: Optional[str] = None,
         value: Optional[Union[int, str]] = None,
         member_name: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
-        Retrieves an enum with bidirectional and reverse-lookup support:
-        - By Enum name (e.g., 'CatProductSource')
-        - By Enum name + numeric index/value (e.g., name='CatProductSource', value=1 -> matches 'catProductMade')
-        - By Member name (e.g., member_name='catProductMade' or name='catProductMade' -> returns parent enum + matched member)
         """
         cursor = self.conn.cursor()
-        
         target_name = (name or "").strip()
-        target_member = (member_name or "").strip()
-        
-        # Case 1: Direct Enum name lookup
-        row = None
-        if target_name:
             cursor.execute("SELECT * FROM enums WHERE name = ? COLLATE NOCASE", (target_name,))
             row = cursor.fetchone()
             
-        # Case 2: If not found by enum name, check if target_name or target_member is an enum member name
         member_to_search = target_member or (target_name if not row else "")
-        if not row and member_to_search:
-            search_pattern = f'%"{member_to_search}"%'
             cursor.execute("SELECT * FROM enums WHERE values_json LIKE ? COLLATE NOCASE", (search_pattern,))
             candidates = cursor.fetchall()
             for cand in candidates:
                 cand_vals = json.loads(cand["values_json"])
-                for idx, v in enumerate(cand_vals):
-                    if v.get("name", "").lower() == member_to_search.lower():
                         row = cand
                         if value is None:
                             value = idx
                         break
-                if row:
-                    break
-
         if not row:
             return None
-            
-        raw_values = json.loads(row["values_json"])
-        enriched_values = []
-        matched_item = None
-        
-        # Normalize search value if provided
-        int_val = None
-        str_val = None
-        if value is not None:
-            if isinstance(value, int):
-                int_val = value
-            elif isinstance(value, str):
-                if value.strip().isdigit() or (value.strip().startswith("-") and value.strip()[1:].isdigit()):
-                    int_val = int(value.strip())
-                else:
-                    str_val = value.strip().lower()
 
-        for idx, item in enumerate(raw_values):
-            item_val = item.get("value", idx)
-            val_entry = {
-                "name": item.get("name", ""),
-                "value": item_val,
-                "description": item.get("description", "")
-            }
-            enriched_values.append(val_entry)
-            
-            # Check match by index/value
-            if int_val is not None and item_val == int_val:
-                matched_item = val_entry
-            elif str_val is not None and val_entry["name"].lower() == str_val:
-                matched_item = val_entry
-            elif member_to_search and val_entry["name"].lower() == member_to_search.lower():
-                matched_item = val_entry
+        values = json.loads(row["values_json"])
+        for idx, item in enumerate(values):
+            if "value" not in item:
+                item["value"] = idx
 
-        result = {
+        enum_data: Dict[str, Any] = {
             "name": row["name"],
-            "description": row["description"],
-            "values": enriched_values
-        }
-        if matched_item is not None:
-            result["matched_value"] = matched_item
+            "description": row["description"] or "",
+                    break
+                elif str_val is not None and val_entry["name"].lower() == str_val:
+                    break
 
-        return result
-
-    def get_interfaces_by_member(
-        self,
-        member_name: str,
-        member_type: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
+            if matched_item:
         Reverse searches which interfaces contain or declare a specific property or method.
-        Example: get_interfaces_by_member('PartNumber') returns host interfaces such as Product, StrMember, etc.
-        """
-        cursor = self.conn.cursor()
-        query_member = member_name.strip()
-        filter_type = (member_type or "all").lower()
-
-        properties = []
         methods = []
         host_interfaces = set()
 
@@ -418,7 +420,6 @@ class CatalystDB:
             cursor.execute(
                 "SELECT interface_name, name, return_type, params_json, declared_in FROM methods WHERE name = ? COLLATE NOCASE",
                 (query_member,)
-            )
             for row in cursor.fetchall():
                 host_interfaces.add(row["interface_name"])
                 methods.append({
