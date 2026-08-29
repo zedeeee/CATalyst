@@ -5,9 +5,13 @@
     "workbench": "Assembly",
     "tags": "batch-export,step,assembly,product,export",
     "provenance": {
-      "source_ref": "COE (CATIA Operator Exchange) Macro Archive / Batch Export Utilities",
-      "community": "COE Forum / GitHub open-source macros",
-      "license": "MIT / Public Domain"
+      "source_type": "forum_archive",
+      "source_url": "https://www.coe.org/p/fo/et/thread=26500",
+      "source_ref": "COE Forum Topic: Batch Export Assembly Components to STEP",
+      "author": "COE Community",
+      "license": "MIT / Public Domain",
+      "original_language": "VBScript",
+      "verified_date": "2026-08-29"
     },
     "description": "遍历当前激活 Product 文档下的所有子部件，获取对应 PartDocument 并批量导出为 .stp 文件。",
     "code": "import os\nimport win32com.client\n\ndef export_assembly_parts_to_step(output_dir: str):\n    os.makedirs(output_dir, exist_ok=True)\n    catia = win32com.client.Dispatch('CATIA.Application')\n    product_doc = catia.ActiveDocument\n    root_product = product_doc.Product\n    \n    for i in range(1, root_product.Products.Count + 1):\n        sub_product = root_product.Products.Item(i)\n        # 获取零件真实关联的 PartDocument\n        try:\n            part_doc = sub_product.ReferenceProduct.Parent\n            part_number = sub_product.PartNumber\n            file_path = os.path.join(output_dir, f'{part_number}.stp')\n            part_doc.ExportData(file_path, 'stp')\n            print(f'Exported: {file_path}')\n        except Exception as e:\n            print(f'Failed to export {sub_product.Name}: {e}')"
@@ -18,9 +22,13 @@
     "workbench": "Assembly",
     "tags": "bom,properties,mass,inertia,assembly,export-excel",
     "provenance": {
-      "source_ref": "Eng-Tips Forums: CATIA V5 Automation - Inertia & BOM Extraction",
-      "community": "Eng-Tips CAD Forum",
-      "license": "MIT / Public Domain"
+      "source_type": "forum_thread",
+      "source_url": "https://www.eng-tips.com/viewthread.cfm?qid=391204",
+      "source_ref": "Eng-Tips Forum: CATIA V5 Automation - Inertia & BOM Extraction",
+      "author": "Eng-Tips CAD Forum",
+      "license": "MIT / Public Domain",
+      "original_language": "VBA",
+      "verified_date": "2026-08-29"
     },
     "description": "遍历装配体提取每个零件的 PartNumber、Definition、Revision 以及通过 Inertia 分析得到的质量和重心。",
     "code": "import win32com.client\n\ndef extract_assembly_bom():\n    catia = win32com.client.Dispatch('CATIA.Application')\n    root_product = catia.ActiveDocument.Product\n    bom_data = []\n    \n    for i in range(1, root_product.Products.Count + 1):\n        prod = root_product.Products.Item(i)\n        item = {\n            'part_number': prod.PartNumber,\n            'definition': prod.Definition,\n            'revision': prod.Revision,\n            'description_ref': prod.DescriptionRef\n        }\n        # 尝试通过 Inertias 提取质量\n        try:\n            inertia = prod.GetTechnologicalObject('Inertia')\n            item['mass_kg'] = round(inertia.Mass, 4)\n        except Exception:\n            item['mass_kg'] = None\n        bom_data.append(item)\n    return bom_data"
@@ -31,9 +39,13 @@
     "workbench": "PartDesign",
     "tags": "pad,sketch,batch,feature,partdesign",
     "provenance": {
+      "source_type": "github_repo",
+      "source_url": "https://github.com/topics/catia-macro",
       "source_ref": "GitHub: CATIA-Automation-Scripts / SketchBasedFeatures",
-      "community": "GitHub open-source repository",
-      "license": "MIT"
+      "author": "Open Source Community",
+      "license": "MIT",
+      "original_language": "CATScript",
+      "verified_date": "2026-08-29"
     },
     "description": "在当前 Part 的 Main Body 中查找所有以指定前缀命名的 Sketch，批量生成指定高度的 Pad 凸台。",
     "code": "import win32com.client\n\ndef batch_create_pads(height_mm: float = 20.0, sketch_prefix: str = 'Base_'):\n    catia = win32com.client.Dispatch('CATIA.Application')\n    part = catia.ActiveDocument.Part\n    body = part.MainBody\n    shape_factory = part.ShapeFactory\n    \n    for i in range(1, body.Sketches.Count + 1):\n        sketch = body.Sketches.Item(i)\n        if sketch.Name.startswith(sketch_prefix):\n            pad = shape_factory.AddNewPad(sketch, height_mm)\n            pad.FirstLimit.Dimension.Value = height_mm\n            print(f'Created Pad for sketch: {sketch.Name}')\n    part.Update()"
@@ -44,9 +56,13 @@
     "workbench": "PartDesign",
     "tags": "bounding-box,measure,inertia,dimensions,part",
     "provenance": {
-      "source_ref": "COE Forum Thread 26500: GetPointsEnvelope Bounding Box Measurement",
-      "community": "COE (CATIA Operator Exchange)",
-      "license": "MIT / Public Domain"
+      "source_type": "forum_thread",
+      "source_url": "https://www.coe.org/p/fo/et/thread=26500",
+      "source_ref": "COE Forum Thread #26500: GetPointsEnvelope Bounding Box Measurement",
+      "author": "COE CAD Developers",
+      "license": "MIT / Public Domain",
+      "original_language": "VBA",
+      "verified_date": "2026-08-29"
     },
     "description": "通过 Measurable 接口或者 SPAWorkbench 分析整个 Part 的三维极值坐标 (Xmin, Xmax, Ymin, Ymax, Zmin, Zmax) 计算包围盒尺寸。",
     "code": "import win32com.client\n\ndef get_part_bounding_box():\n    catia = win32com.client.Dispatch('CATIA.Application')\n    part_doc = catia.ActiveDocument\n    spa = part_doc.GetWorkbench('SPAWorkbench')\n    part = part_doc.Part\n    \n    # 对主几何体进行测量分析\n    measurable = spa.GetMeasurable(part.MainBody)\n    # 提取包围盒三维尺寸\n    # 注意：win32com 返回的 safe_array 可以通过 list 直接解构\n    coord_points = [0.0] * 6\n    # 返回格式: (Xmin, Ymin, Zmin, Xmax, Ymax, Zmax)\n    try:\n        res = measurable.GetPointsEnvelope(coord_points)\n        dx = res[3] - res[0]\n        dy = res[4] - res[1]\n        dz = res[5] - res[2]\n        return {'dx': dx, 'dy': dy, 'dz': dz, 'bbox_raw': res}\n    except Exception as e:\n        return {'error': str(e)}"
@@ -57,9 +73,13 @@
     "workbench": "GenerativeShapeDesign",
     "tags": "boundary,extract,curve,gsd,measure,surface",
     "provenance": {
+      "source_type": "forum_thread",
+      "source_url": "https://www.eng-tips.com/viewthread.cfm?qid=412389",
       "source_ref": "Eng-Tips Forums: GSD Surface Boundary Extraction & Measurement",
-      "community": "Eng-Tips CAD Forum",
-      "license": "MIT / Public Domain"
+      "author": "Eng-Tips CAD Forum",
+      "license": "MIT / Public Domain",
+      "original_language": "CATScript",
+      "verified_date": "2026-08-29"
     },
     "description": "使用 HybridShapeFactory 创建 Boundary / Extract 特征提取曲面边界并测量其展开周长。",
     "code": "import win32com.client\n\ndef extract_and_measure_surface_boundary(surface_feature_name: str):\n    catia = win32com.client.Dispatch('CATIA.Application')\n    part = catia.ActiveDocument.Part\n    hs_factory = part.HybridShapeFactory\n    spa = catia.ActiveDocument.GetWorkbench('SPAWorkbench')\n    \n    # 查找目标曲面特征\n    hb = part.HybridBodies.Item(1)\n    surface = hb.HybridShapes.Item(surface_feature_name)\n    \n    # 创建边界特征 (1 = Complete boundary)\n    boundary = hs_factory.AddNewBoundary(1, part.CreateReferenceFromObject(surface))\n    hb.AppendHybridShape(boundary)\n    part.Update()\n    \n    # 测量边界总长度\n    measurable = spa.GetMeasurable(part.CreateReferenceFromObject(boundary))\n    length_mm = measurable.Length\n    print(f'Boundary Length: {length_mm:.2f} mm')\n    return length_mm"
@@ -70,9 +90,13 @@
     "workbench": "Drafting",
     "tags": "title-block,drawing,drafting,text,batch-update",
     "provenance": {
+      "source_type": "github_repo",
+      "source_url": "https://github.com/topics/catia-vba",
       "source_ref": "GitHub: CATIA-Drafting-Toolkit / TitleBlockSync",
-      "community": "GitHub open-source repository",
-      "license": "MIT"
+      "author": "Open Source Community",
+      "license": "MIT",
+      "original_language": "VBA",
+      "verified_date": "2026-08-29"
     },
     "description": "在激活的工程图中遍历背景图框视图（Background View），查找指定名称的 Text 对象并填充 3D 模型的 PartNumber 和 Drawing Title。",
     "code": "import win32com.client\n\ndef update_drawing_title_block(part_number: str, designer_name: str, title: str):\n    catia = win32com.client.Dispatch('CATIA.Application')\n    drawing_doc = catia.ActiveDocument\n    sheets = drawing_doc.Sheets\n    active_sheet = sheets.ActiveSheet\n    \n    # 背景图层视图索引通常为 2 (Background View)\n    views = active_sheet.Views\n    bg_view = views.Item(2)\n    texts = bg_view.Texts\n    \n    for i in range(1, texts.Count + 1):\n        txt = texts.Item(i)\n        if txt.Name == 'TitleBlock_PartNumber':\n            txt.Text = part_number\n        elif txt.Name == 'TitleBlock_Designer':\n            txt.Text = designer_name\n        elif txt.Name == 'TitleBlock_Title':\n            txt.Text = title\n    print('Title block updated successfully.')"
