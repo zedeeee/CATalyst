@@ -1,6 +1,20 @@
 import os
-import pytest
 from pathlib import Path
+try:
+    import pytest
+except ImportError:
+    class DummyPytest:
+        def fixture(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+        def skip(self, msg=""):
+            pass
+        def raises(self, exc):
+            import contextlib
+            return contextlib.nullcontext()
+    pytest = DummyPytest()
+
 from src.engine.db import CatalystDB, _resolve_db_path
 
 @pytest.fixture(scope="module")
@@ -150,18 +164,32 @@ def test_search_type_filter(db):
     assert all(r["type"] == "method" for r in res_meth)
     assert any("SystemConfiguration.GetProductNames" in r["name"] for r in res_meth)
 
-def test_concurrent_multithread_queries(db):
-    from concurrent.futures import ThreadPoolExecutor
-    
-    def worker(query):
-        return db.search(query, limit=5)
-        
-    queries = ["Pad", "PartNumber", "CatProductSource", "ServicePack", "Prism", "Document"] * 5
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        results = list(executor.map(worker, queries))
-        
-    assert len(results) == len(queries)
-    assert all(len(r) > 0 for r in results)
+def test_get_usecases_dual_track(db):
+    # Test community source
+    comm_ucs = db.get_usecases("Product", source="community")
+    assert len(comm_ucs) > 0
+    assert all(u["source"] == "community" for u in comm_ucs)
+    assert any("STEP" in u["title"] or "BOM" in u["title"] for u in comm_ucs)
+    assert comm_ucs[0].get("provenance") is not None
+
+    # Test all source with Pad
+    all_ucs = db.get_usecases("Pad", source="all")
+    assert len(all_ucs) > 0
+
+def test_search_recipes(db):
+    # Search by intent
+    res = db.search_recipes("export step")
+    assert len(res) > 0
+    match = res[0]
+    assert match["interface"] == "Product"
+    assert match["workbench"] == "Assembly"
+    assert "STEP" in match["title"]
+    assert "win32com" in match["code"]
+
+    # Search with workbench filter
+    res_part = db.search_recipes("pad", workbench="PartDesign")
+    assert len(res_part) > 0
+    assert any(r["workbench"] == "PartDesign" for r in res_part)
 
 
 

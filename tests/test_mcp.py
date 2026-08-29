@@ -1,5 +1,19 @@
 import json
-import pytest
+try:
+    import pytest
+except ImportError:
+    class DummyPytest:
+        def fixture(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+        def skip(self, msg=""):
+            pass
+        def raises(self, exc):
+            import contextlib
+            return contextlib.nullcontext()
+    pytest = DummyPytest()
+
 import src.mcp.server as mcp_server
 
 
@@ -155,4 +169,23 @@ def test_mcp_concurrent_multithread_requests():
     for raw in responses:
         parsed = json.loads(raw)
         assert not parsed.get("isError"), f"Multithreaded MCP call returned error: {parsed}"
+
+
+def test_mcp_search_catia_recipes():
+    res_str = mcp_server.search_catia_recipes(query="export step")
+    data = json.loads(res_str)
+    assert not data.get("isError")
+    assert data["total_matches"] > 0
+    first_recipe = data["recipes"][0]
+    assert first_recipe["interface"] == "Product"
+    assert "STEP" in first_recipe["title"]
+
+
+def test_mcp_get_usecases_community():
+    res_str = mcp_server.get_catia_usecases(interface="Product", source="community")
+    data = json.loads(res_str)
+    assert not data.get("isError")
+    assert data["total_examples"] > 0
+    assert all(uc["source"] == "community" for uc in data["usecases"])
+
 
