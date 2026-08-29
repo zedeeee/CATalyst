@@ -125,6 +125,37 @@ class CatalystDB:
             self._local.conn = conn_instance
         return conn_instance
 
+    def _load_community_recipes(self) -> List[Dict[str, Any]]:
+        """
+        Dynamically loads community recipes from data/recipes directory on disk.
+        Allows hot-reloading community recipes without touching or rebuilding the official SQLite DB.
+        """
+        recipes_dir = PROJECT_ROOT / "data" / "recipes"
+        if not recipes_dir.exists():
+            return []
+
+        recipes = []
+        for json_file in sorted(recipes_dir.glob("*.json")):
+            try:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        for item in data:
+                            entry = {
+                                "interface": item.get("interface_name", "General"),
+                                "source": "community",
+                                "title": item.get("title", ""),
+                                "workbench": item.get("workbench", ""),
+                                "tags": item.get("tags", ""),
+                                "provenance": item.get("provenance", {"license": "MIT"}),
+                                "context": item.get("description", ""),
+                                "code": item.get("code", "")
+                            }
+                            recipes.append(entry)
+            except Exception as e:
+                logger.warning(f"Failed to load recipe file {json_file}: {e}")
+        return recipes
+
     def get_interface(
         self,
         name: str,
@@ -261,6 +292,7 @@ class CatalystDB:
         """
         Retrieves targeted code usecases/recipes for an interface and optional member/query.
         Official examples from SQLite DB + Community recipes dynamically loaded from data/recipes/.
+        """
         if not interface:
             return []
         target_if = interface.strip().lower()
@@ -274,23 +306,37 @@ class CatalystDB:
             cursor = self.conn.cursor()
             cursor.execute("PRAGMA table_info(usecases)")
             columns = [r[1] for r in cursor.fetchall()]
+            has_extended = "source" in columns
+
+            where_clauses = ["interface_name = ? COLLATE NOCASE"]
             params: List[Any] = [interface.strip()]
 
             if has_extended:
                 where_clauses.append("(source = 'official' OR source IS NULL)")
 
             if target_mbr:
+                where_clauses.append("(context = ? COLLATE NOCASE OR context LIKE ? OR code LIKE ?)")
                 params.extend([member.strip(), f"%{member.strip()}%", f"%{member.strip()}%"])
 
             if target_q:
+                q_words = [w for w in query.strip().split() if w]
+                for w in q_words:
+                    if has_extended:
+                        where_clauses.append("(title LIKE ? OR tags LIKE ? OR context LIKE ? OR code LIKE ?)")
+                        params.extend([f"%{w}%", f"%{w}%", f"%{w}%", f"%{w}%"])
+                    else:
                         where_clauses.append("(context LIKE ? OR code LIKE ?)")
                         params.extend([f"%{w}%", f"%{w}%"])
 
             where_sql = " AND ".join(where_clauses)
+            query_sql = f"SELECT * FROM usecases WHERE {where_sql} ORDER BY rowid ASC LIMIT ?"
+            params.append(limit)
 
             cursor.execute(query_sql, params)
             rows = cursor.fetchall()
             for r in rows:
+                entry = {
+                    "interface": r["interface_name"],
                     "source": "official",
                     "title": r["title"] if (has_extended and "title" in r.keys() and r["title"]) else f"{r['interface_name']} Official Example ({r['context']})",
                     "workbench": r["workbench"] if (has_extended and "workbench" in r.keys()) else "",
@@ -303,15 +349,44 @@ class CatalystDB:
 
         # 2. Fetch Community Recipes dynamically from data/recipes/
         if target_src in ("all", "community") and len(results) < limit:
+            comm_recipes = self._load_community_recipes()
+            for rc in comm_recipes:
+                if rc["interface"].lower() != target_if:
                     continue
                 if target_mbr and (target_mbr not in rc["context"].lower() and target_mbr not in rc["code"].lower() and target_mbr not in rc["title"].lower()):
                     continue
+                if target_q:
+                    q_words = [w for w in target_q.split() if w]
+                    text_blob = f"{rc['title']} {rc['tags']} {rc['context']} {rc['code']}".lower()
+                    if not all(w in text_blob for w in q_words):
+                        continue
+                results.append(rc)
+                if len(results) >= limit:
+                    break
+
         return results[:limit]
 
     def search_recipes(
+        self,
+        query: str,
+        workbench: Optional[str] = None,
         source: str = "all",
         limit: int = 5
     ) -> List[Dict[str, Any]]:
+        """
+        Searches practical code recipes across all interfaces by intent keyword, tags, or workbench.
+        Official examples from SQLite DB + Community recipes dynamically loaded from disk.
+        """
+        if not query:
+            return []
+        search_q = query.strip().lower()
+        search_wb = workbench.strip().lower() if workbench else None
+        target_src = source.strip().lower() if source else "all"
+
+        results: List[Dict[str, Any]] = []
+
+        # 1. Official Usecases Search from DB
+        if target_src in ("all", "official"):
             cursor = self.conn.cursor()
             cursor.execute("PRAGMA table_info(usecases)")
             columns = [r[1] for r in cursor.fetchall()]
@@ -329,6 +404,7 @@ class CatalystDB:
 
             q_words = [w for w in search_q.split() if w]
             for w in q_words:
+                if has_extended:
                     where_clauses.append("(title LIKE ? OR tags LIKE ? OR context LIKE ? OR interface_name LIKE ? OR code LIKE ?)")
                     params.extend([f"%{w}%", f"%{w}%", f"%{w}%", f"%{w}%", f"%{w}%"])
                 else:
@@ -337,8 +413,25 @@ class CatalystDB:
 
             where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
             query_sql = f"SELECT * FROM usecases WHERE {where_sql} ORDER BY rowid ASC LIMIT ?"
+            params.append(limit)
+
+            cursor.execute(query_sql, params)
+            rows = cursor.fetchall()
+            for r in rows:
+                entry = {
+                    "interface": r["interface_name"],
+                    "source": "official",
+                    "title": r["title"] if (has_extended and "title" in r.keys() and r["title"]) else f"{r['interface_name']} Official Example ({r['context']})",
+                    "workbench": r["workbench"] if (has_extended and "workbench" in r.keys()) else "",
+                    "tags": r["tags"] if (has_extended and "tags" in r.keys()) else "",
+                    "provenance": {"source": "V5Automation.chm"},
+                    "context": r["context"],
+                    "code": r["code"]
+                }
+                results.append(entry)
 
         # 2. Community Recipes Search from data/recipes/
+        if target_src in ("all", "community") and len(results) < limit:
             comm_recipes = self._load_community_recipes()
             q_words = [w for w in search_q.split() if w]
             for rc in comm_recipes:
@@ -355,32 +448,113 @@ class CatalystDB:
     def get_search_syntax(
         self,
         workbench: Optional[str] = None,
+        query_type: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Retrieves Selection.Search query syntax grammar for CATIA workbenches and geometry types.
         """
         prefix_mapping = {
             "partdesign": "CATPrtSearch",
+            "assembly": "CATAsmSearch",
+            "drafting": "CATDrwSearch",
+            "generativeshapedesign": "CATGsdSearch",
+            "gsd": "CATGsdSearch",
+            "sketcher": "CATPrtSearch"
+        }
+        
+        cursor = self.conn.cursor()
+        wb_key = (workbench or "").strip().lower()
+        prefix = prefix_mapping.get(wb_key, "CATPrtSearch")
+        
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='search_syntax'")
+        has_table = cursor.fetchone() is not None
+        
+        types = []
+        if has_table:
+            if workbench:
+                cursor.execute("SELECT * FROM search_syntax WHERE workbench = ? COLLATE NOCASE", (workbench.strip(),))
+            else:
+                cursor.execute("SELECT * FROM search_syntax")
+            for row in cursor.fetchall():
+                types.append({
+                    "workbench": row["workbench"],
+                    "type": row["type_name"],
+                    "prefix": row["prefix"],
+                    "example": row["example"]
+                })
+        else:
+            default_types = [
+                {"workbench": "PartDesign", "type": "Pad", "prefix": "CATPrtSearch", "example": "CATPrtSearch.Pad.Name=*,all"},
+                {"workbench": "PartDesign", "type": "Hole", "prefix": "CATPrtSearch", "example": "CATPrtSearch.Hole.Diameter>10,all"},
+                {"workbench": "PartDesign", "type": "Pocket", "prefix": "CATPrtSearch", "example": "CATPrtSearch.Pocket,all"},
+                {"workbench": "PartDesign", "type": "Fillet", "prefix": "CATPrtSearch", "example": "CATPrtSearch.Fillet,all"},
+                {"workbench": "PartDesign", "type": "Chamfer", "prefix": "CATPrtSearch", "example": "CATPrtSearch.Chamfer,all"},
+                {"workbench": "PartDesign", "type": "Sketch", "prefix": "CATPrtSearch", "example": "CATPrtSearch.Sketch.Visibility=Visible,all"},
+                {"workbench": "PartDesign", "type": "Plane", "prefix": "CATPrtSearch", "example": "CATPrtSearch.Plane,all"},
+                {"workbench": "PartDesign", "type": "Point", "prefix": "CATPrtSearch", "example": "CATPrtSearch.Point,all"},
+                {"workbench": "Assembly", "type": "Product", "prefix": "CATAsmSearch", "example": "CATAsmSearch.Product.PartNumber=*,all"},
+                {"workbench": "Assembly", "type": "Part", "prefix": "CATAsmSearch", "example": "CATAsmSearch.Part,all"},
+                {"workbench": "Drafting", "type": "DrawingView", "prefix": "CATDrwSearch", "example": "CATDrwSearch.DrawingView,all"},
+                {"workbench": "Drafting", "type": "DrawingText", "prefix": "CATDrwSearch", "example": "CATDrwSearch.DrawingText,all"},
+                {"workbench": "GenerativeShapeDesign", "type": "Surface", "prefix": "CATGsdSearch", "example": "CATGsdSearch.Surface,all"},
+                {"workbench": "GenerativeShapeDesign", "type": "Spline", "prefix": "CATGsdSearch", "example": "CATGsdSearch.Spline,all"}
+            ]
+            if workbench:
+                types = [t for t in default_types if t["workbench"].lower() == wb_key or wb_key in t["workbench"].lower()]
+            else:
+                types = default_types
+
+        result = {
+            "requested_workbench": workbench,
+            "prefix": prefix,
+            "grammar": f"{prefix}.<Type>.<Attribute>=<Value>,<Scope>",
+            "scopes": ["all", "in", "sel"],
+            "types": types
+        }
+
+        if query_type:
+            q_type_lower = query_type.strip().lower()
+            matched = [t for t in types if q_type_lower in t["type"].lower()]
+            result["matched_types"] = matched
+            if matched:
+                result["suggested_query"] = matched[0]["example"]
+
+        return result
+
+    def get_enum(
+        self,
         name: Optional[str] = None,
         value: Optional[Union[int, str]] = None,
         member_name: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
+        Retrieves an enum with bidirectional and reverse-lookup support.
         """
         cursor = self.conn.cursor()
         target_name = (name or "").strip()
+        target_member = (member_name or "").strip()
+        
+        row = None
+        if target_name:
             cursor.execute("SELECT * FROM enums WHERE name = ? COLLATE NOCASE", (target_name,))
             row = cursor.fetchone()
             
         member_to_search = target_member or (target_name if not row else "")
+        if not row and member_to_search:
+            search_pattern = f"%\"{member_to_search}\"%"
             cursor.execute("SELECT * FROM enums WHERE values_json LIKE ? COLLATE NOCASE", (search_pattern,))
             candidates = cursor.fetchall()
             for cand in candidates:
                 cand_vals = json.loads(cand["values_json"])
+                for idx, v in enumerate(cand_vals):
+                    if v.get("name", "").lower() == member_to_search.lower():
                         row = cand
                         if value is None:
                             value = idx
                         break
+                if row:
+                    break
+
         if not row:
             return None
 
@@ -392,12 +566,52 @@ class CatalystDB:
         enum_data: Dict[str, Any] = {
             "name": row["name"],
             "description": row["description"] or "",
+            "values": values
+        }
+
+        if value is not None or member_to_search:
+            matched_item = None
+            int_val = None
+            str_val = None
+            if value is not None:
+                if isinstance(value, int):
+                    int_val = value
+                else:
+                    try:
+                        int_val = int(value.strip())
+                    except ValueError:
+                        str_val = value.strip().lower()
+
+            for val_entry in values:
+                if int_val is not None and val_entry.get("value") == int_val:
+                    matched_item = val_entry
                     break
                 elif str_val is not None and val_entry["name"].lower() == str_val:
+                    matched_item = val_entry
+                    break
+                elif member_to_search and val_entry["name"].lower() == member_to_search.lower():
+                    matched_item = val_entry
                     break
 
             if matched_item:
+                enum_data["matched_value"] = matched_item
+
+        return enum_data
+
+    def get_interfaces_by_member(
+        self,
+        member_name: str,
+        member_type: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
         Reverse searches which interfaces contain or declare a specific property or method.
+        Example: get_interfaces_by_member('PartNumber') returns host interfaces such as Product, StrMember, etc.
+        """
+        cursor = self.conn.cursor()
+        query_member = member_name.strip()
+        filter_type = (member_type or "all").lower()
+
+        properties = []
         methods = []
         host_interfaces = set()
 
@@ -420,6 +634,7 @@ class CatalystDB:
             cursor.execute(
                 "SELECT interface_name, name, return_type, params_json, declared_in FROM methods WHERE name = ? COLLATE NOCASE",
                 (query_member,)
+            )
             for row in cursor.fetchall():
                 host_interfaces.add(row["interface_name"])
                 methods.append({
