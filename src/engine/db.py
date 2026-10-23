@@ -110,10 +110,24 @@ def _generate_python_method_hint(method_name: str, return_type: str, params: Lis
     return hints if hints else None
 
 
+def _format_fts_query(query_str: str) -> str:
+    """
+    Sanitizes and formats a user search query into a valid SQLite FTS5 MATCH expression.
+    Strips syntax control characters and uses prefix matching for each term.
+    """
+    import re
+    cleaned = re.sub(r'["\'\*\^\:\(\)\{\}\[\]\+\-\~\?]', ' ', query_str)
+    tokens = [t.strip() for t in cleaned.split() if t.strip()]
+    if not tokens:
+        return ""
+    return " AND ".join(f'"{t}"*' for t in tokens)
+
+
 class CatalystDB:
     def __init__(self, db_path: Optional[Union[str, Path]] = None):
         self.db_path = _resolve_db_path(db_path)
         self._local = threading.local()
+        self._fts_checked = False
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -123,7 +137,75 @@ class CatalystDB:
             conn_instance = sqlite3.connect(self.db_path, check_same_thread=False)
             conn_instance.row_factory = sqlite3.Row
             self._local.conn = conn_instance
+            if not self._fts_checked:
+                self._ensure_fts_indexes(conn_instance)
+                self._fts_checked = True
         return conn_instance
+
+    def _has_table(self, table_name: str) -> bool:
+        """Checks if a specific table exists in the database."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
+        return cursor.fetchone() is not None
+
+    def _ensure_fts_indexes(self, conn: sqlite3.Connection):
+        """
+        Idempotently verifies and builds FTS5 virtual tables if missing.
+        Allows legacy databases to automatically gain BM25 search capabilities.
+        """
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='usecases_fts'")
+            has_usecases_fts = cursor.fetchone() is not None
+
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='apis_fts'")
+            has_apis_fts = cursor.fetchone() is not None
+
+            if not has_usecases_fts:
+                cursor.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS usecases_fts USING fts5(
+                        id UNINDEXED,
+                        interface_name,
+                        title,
+                        workbench,
+                        tags,
+                        context,
+                        code,
+                        tokenize = 'unicode61'
+                    )
+                """)
+                cursor.execute("""
+                    INSERT INTO usecases_fts (id, interface_name, title, workbench, tags, context, code)
+                    SELECT id, interface_name, title, workbench, tags, context, code FROM usecases
+                """)
+
+            if not has_apis_fts:
+                cursor.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS apis_fts USING fts5(
+                        item_type,
+                        name,
+                        description,
+                        framework,
+                        parent_interface,
+                        declared_in,
+                        data_type,
+                        readonly UNINDEXED,
+                        tokenize = 'unicode61'
+                    )
+                """)
+                cursor.execute("""
+                    INSERT INTO apis_fts (item_type, name, description, framework, parent_interface, declared_in, data_type, readonly)
+                    SELECT 'interface', name, description, framework, '', name, '', 0 FROM interfaces
+                    UNION ALL
+                    SELECT 'enum', name, description, '', '', name, '', 0 FROM enums
+                    UNION ALL
+                    SELECT 'property', interface_name || '.' || name, '', '', interface_name, declared_in, type, readonly FROM properties
+                    UNION ALL
+                    SELECT 'method', interface_name || '.' || name, '', '', interface_name, declared_in, return_type, 0 FROM methods
+                """)
+            conn.commit()
+        except Exception as e:
+            logger.debug(f"FTS5 auto-initialization skipped or unsupported: {e}")
 
     def _load_community_recipes(self) -> List[Dict[str, Any]]:
         """
@@ -385,50 +467,93 @@ class CatalystDB:
 
         results: List[Dict[str, Any]] = []
 
-        # 1. Official Usecases Search from DB
+        # 1. Official Usecases Search from DB (FTS5 BM25 first, fallback to LIKE)
         if target_src in ("all", "official"):
             cursor = self.conn.cursor()
             cursor.execute("PRAGMA table_info(usecases)")
             columns = [r[1] for r in cursor.fetchall()]
             has_extended = "source" in columns
 
-            where_clauses = []
-            params: List[Any] = []
+            used_fts = False
+            fts_query = _format_fts_query(query)
+            if self._has_table("usecases_fts") and fts_query:
+                try:
+                    where_clauses = ["usecases_fts MATCH ?"]
+                    params: List[Any] = [fts_query]
 
-            if has_extended:
-                where_clauses.append("(source = 'official' OR source IS NULL)")
+                    if has_extended:
+                        where_clauses.append("(source = 'official' OR source IS NULL)")
+                    if has_extended and search_wb:
+                        where_clauses.append("workbench = ? COLLATE NOCASE")
+                        params.append(workbench.strip())
 
-            if has_extended and search_wb:
-                where_clauses.append("workbench = ? COLLATE NOCASE")
-                params.append(workbench.strip())
+                    where_sql = " AND ".join(where_clauses)
+                    fts_sql = f"""
+                        SELECT u.*, bm25(usecases_fts) as rank
+                        FROM usecases_fts fts
+                        JOIN usecases u ON fts.id = u.id
+                        WHERE {where_sql}
+                        ORDER BY rank ASC
+                        LIMIT ?
+                    """
+                    params.append(limit)
+                    cursor.execute(fts_sql, params)
+                    rows = cursor.fetchall()
+                    if rows:
+                        used_fts = True
+                        for r in rows:
+                            entry = {
+                                "interface": r["interface_name"],
+                                "source": "official",
+                                "title": r["title"] if (has_extended and "title" in r.keys() and r["title"]) else f"{r['interface_name']} Official Example ({r['context']})",
+                                "workbench": r["workbench"] if (has_extended and "workbench" in r.keys()) else "",
+                                "tags": r["tags"] if (has_extended and "tags" in r.keys()) else "",
+                                "provenance": {"source": "V5Automation.chm"},
+                                "context": r["context"],
+                                "code": r["code"]
+                            }
+                            results.append(entry)
+                except Exception as e:
+                    logger.debug(f"FTS5 recipe search fallback to LIKE: {e}")
 
-            q_words = [w for w in search_q.split() if w]
-            for w in q_words:
+            if not used_fts:
+                where_clauses = []
+                params = []
+
                 if has_extended:
-                    where_clauses.append("(title LIKE ? OR tags LIKE ? OR context LIKE ? OR interface_name LIKE ? OR code LIKE ?)")
-                    params.extend([f"%{w}%", f"%{w}%", f"%{w}%", f"%{w}%", f"%{w}%"])
-                else:
-                    where_clauses.append("(interface_name LIKE ? OR context LIKE ? OR code LIKE ?)")
-                    params.extend([f"%{w}%", f"%{w}%", f"%{w}%"])
+                    where_clauses.append("(source = 'official' OR source IS NULL)")
 
-            where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
-            query_sql = f"SELECT * FROM usecases WHERE {where_sql} ORDER BY rowid ASC LIMIT ?"
-            params.append(limit)
+                if has_extended and search_wb:
+                    where_clauses.append("workbench = ? COLLATE NOCASE")
+                    params.append(workbench.strip())
 
-            cursor.execute(query_sql, params)
-            rows = cursor.fetchall()
-            for r in rows:
-                entry = {
-                    "interface": r["interface_name"],
-                    "source": "official",
-                    "title": r["title"] if (has_extended and "title" in r.keys() and r["title"]) else f"{r['interface_name']} Official Example ({r['context']})",
-                    "workbench": r["workbench"] if (has_extended and "workbench" in r.keys()) else "",
-                    "tags": r["tags"] if (has_extended and "tags" in r.keys()) else "",
-                    "provenance": {"source": "V5Automation.chm"},
-                    "context": r["context"],
-                    "code": r["code"]
-                }
-                results.append(entry)
+                q_words = [w for w in search_q.split() if w]
+                for w in q_words:
+                    if has_extended:
+                        where_clauses.append("(title LIKE ? OR tags LIKE ? OR context LIKE ? OR interface_name LIKE ? OR code LIKE ?)")
+                        params.extend([f"%{w}%", f"%{w}%", f"%{w}%", f"%{w}%", f"%{w}%"])
+                    else:
+                        where_clauses.append("(interface_name LIKE ? OR context LIKE ? OR code LIKE ?)")
+                        params.extend([f"%{w}%", f"%{w}%", f"%{w}%"])
+
+                where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+                query_sql = f"SELECT * FROM usecases WHERE {where_sql} ORDER BY rowid ASC LIMIT ?"
+                params.append(limit)
+
+                cursor.execute(query_sql, params)
+                rows = cursor.fetchall()
+                for r in rows:
+                    entry = {
+                        "interface": r["interface_name"],
+                        "source": "official",
+                        "title": r["title"] if (has_extended and "title" in r.keys() and r["title"]) else f"{r['interface_name']} Official Example ({r['context']})",
+                        "workbench": r["workbench"] if (has_extended and "workbench" in r.keys()) else "",
+                        "tags": r["tags"] if (has_extended and "tags" in r.keys()) else "",
+                        "provenance": {"source": "V5Automation.chm"},
+                        "context": r["context"],
+                        "code": r["code"]
+                    }
+                    results.append(entry)
 
         # 2. Community Recipes Search from data/recipes/
         if target_src in ("all", "community") and len(results) < limit:
@@ -655,7 +780,8 @@ class CatalystDB:
 
     def search(self, query: str, item_type: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
         """
-        Fuzzy searches across interfaces, enums, properties, and methods.
+        Searches across interfaces, enums, properties, and methods.
+        Prioritizes SQLite FTS5 BM25 full-text indexing, with automatic fallback to LIKE queries.
         Supports filtering by item_type ('interface', 'enum', 'property', 'method', or None/'all').
         """
         cursor = self.conn.cursor()
@@ -663,6 +789,43 @@ class CatalystDB:
         results = []
         
         filter_type = item_type.lower() if item_type else "all"
+
+        # Try FTS5 BM25 search first
+        fts_query = _format_fts_query(query)
+        if self._has_table("apis_fts") and fts_query:
+            try:
+                where_clauses = ["apis_fts MATCH ?"]
+                params: List[Any] = [fts_query]
+                if filter_type != "all":
+                    where_clauses.append("item_type = ?")
+                    params.append(filter_type)
+
+                where_sql = " AND ".join(where_clauses)
+                query_sql = f"""
+                    SELECT item_type as type, name, description, framework, parent_interface, data_type, readonly, declared_in, bm25(apis_fts) as rank
+                    FROM apis_fts
+                    WHERE {where_sql}
+                    ORDER BY rank ASC
+                    LIMIT ?
+                """
+                params.append(limit if limit else 50)
+                cursor.execute(query_sql, params)
+                rows = cursor.fetchall()
+                if rows:
+                    for row in rows:
+                        results.append({
+                            "type": row["type"],
+                            "name": row["name"],
+                            "description": row["description"] or "",
+                            "framework": row["framework"] or "",
+                            "parent_interface": row["parent_interface"] or "",
+                            "data_type": row["data_type"] or "",
+                            "readonly": bool(row["readonly"]),
+                            "declared_in": row["declared_in"]
+                        })
+                    return results
+            except Exception as e:
+                logger.debug(f"FTS5 API search fallback to LIKE: {e}")
 
         # 1. Search Interfaces
         if filter_type in ("all", "interface"):
