@@ -28,18 +28,20 @@ CATIA V5 Automation 拥有 **80+ Framework、数千个 COM 接口**，官方文�
 ### CATalyst 做了什么
 
 ```
-V5Automation.chm ──▶ 解包 ──▶ 结构化解析 ──▶ 继承链融合 ──▶ 紧凑数据库
-                                                              │
-                                          ┌───────────────────┼───────────────────┐
-                                          ▼                   ▼                   ▼
-                                     CLI 查询            MCP Server          Agent Skill
-                                   (< 300 Tokens)     (IDE 原生集成)      (零预载按需召回)
+官方 V5Automation.chm ──▶ 解包解析 ──▶ 继承链融合 ──▶ 官方真理库 (dist/catalyst.db) ──┐
+                                                                                     │
+社区开源实战配方 ───────▶ 安全脱敏 ──▶ 纯 win32com ──▶ 动态配方库 (data/recipes/*.json) ──┼──▶ 引擎统一检索 (src/engine/db.py)
+                                                                                     │
+                                                 ┌───────────────────────────────────┼───────────────────────────────────┐
+                                                 ▼                                   ▼                                   ▼
+                                            CLI 极速查询                        MCP Server                          Agent Skill
+                                          (< 300 Tokens)                     (IDE 原生集成)                      (零预载按需召回)
 ```
 
-1. **ETL 解析引擎**：从官方 CHM 中精准提取全部接口、方法签名、参数类型/方向、枚举常量和官方 VBScript 示例。
-2. **继承链智能融合**：自动递归合并父类（如 `Prism` → `SketchBasedShape` → `Shape` → `AnyObject`）的属性与方法，标注 `declared_in` 来源，彻底消除遗漏。
+1. **官方 API 权威词典 (Ground Truth)**：从官方 CHM 中精准提取全部接口、方法签名、参数类型/方向、枚举常量及 3,766 条官方示例，并自动递归合并父类继承链，保证 0 幻觉。
+2. **社区实战配方库 (Community Cookbook)**：收录经过安全脱敏、纯 `win32com` 编写的工业高频场景配方（装配批处理、BOM 提取、拓扑遍历、工程图自动化），支持按意图自然语言检索并展示开源出处。
 3. **多形态 Token 零浪费检索**：
-   - **CLI**：`python catalyst_cli.py get Pad` → 紧凑 Markdown 签名卡片（< 300 Tokens）
+   - **CLI**：`python catalyst_cli.py get Pad` / `python catalyst_cli.py recipe "export step"`
    - **MCP Server**：适配 Antigravity / Claude Desktop / Cursor 等 IDE 的原生 Model Context Protocol
    - **Agent Skill**：零预载、按需召回的 AI Agent 技能
 
@@ -58,15 +60,16 @@ CATIA V5 Automation 接口**严格向后兼容**，跨版本重复度 > 95%。�
 CATalyst/
 ├── data/
 │   ├── V5Automation.chm          # 官方 CHM 源文件 (默认 R27)
+│   ├── recipes/                  # 社区实战配方库 (纯文本 JSON，热重载)
 │   └── raw/                      # 解包后的 HTML (.gitignore 忽略)
-├── dist/                         # 编译产物：SQLite DB + JSON + 索引
+├── dist/                         # 编译产物：100% 官方 SQLite DB + 索引
 ├── src/
 │   ├── parser/                   # ETL 解析与脱水流水线
-│   ├── engine/                   # 本地检索引擎
+│   ├── engine/                   # 本地双轨融合检索引擎
 │   ├── cli/                      # 命令行工具
 │   └── mcp/                      # MCP Server
 ├── skills/                       # AI Agent 技能定义
-├── docs/                         # 技术文档与复刻指南
+├── docs/                         # 技术文档与实战指南
 ├── tests/                        # 单元测试
 ├── build.py                      # 一键构建入口
 └── README.md
@@ -110,14 +113,20 @@ uv run build.py
 #### CLI 使用
 
 ```bash
-# 查询类的完整签名（含继承链合并）
+# 1. 查询类的完整官方签名（含继承链合并）
 python catalyst_cli.py get Pad
 
-# 全文搜索 API
+# 2. 全文搜索 API 与枚举
 python catalyst_cli.py search "fillet"
 
-# 查询枚举值
+# 3. 查询枚举值与数字索引
 python catalyst_cli.py enum CatHoleType
+
+# 4. 检索实战配方与社区工业案例 (按意图自然语言检索)
+python catalyst_cli.py recipe "export step"
+
+# 5. 查阅指定接口的实操示例 (支持 --source official | community)
+python catalyst_cli.py usecase Pad --source official
 ```
 
 ### 贡献
