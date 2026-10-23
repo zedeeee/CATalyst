@@ -113,6 +113,38 @@ class CatalystBuilder:
                 FOREIGN KEY(interface_name) REFERENCES interfaces(name)
             )
         ''')
+
+        # FTS5 Virtual Tables for high-speed BM25 search
+        cursor.execute("DROP TABLE IF EXISTS usecases_fts")
+        cursor.execute("DROP TABLE IF EXISTS apis_fts")
+        try:
+            cursor.execute('''
+                CREATE VIRTUAL TABLE usecases_fts USING fts5(
+                    id UNINDEXED,
+                    interface_name,
+                    title,
+                    workbench,
+                    tags,
+                    context,
+                    code,
+                    tokenize = 'unicode61'
+                )
+            ''')
+            cursor.execute('''
+                CREATE VIRTUAL TABLE apis_fts USING fts5(
+                    item_type,
+                    name,
+                    description,
+                    framework,
+                    parent_interface,
+                    declared_in,
+                    data_type,
+                    readonly UNINDEXED,
+                    tokenize = 'unicode61'
+                )
+            ''')
+        except sqlite3.OperationalError as e:
+            logger.warning(f"FTS5 virtual tables could not be initialized: {e}")
         
         self.conn.commit()
 
@@ -260,8 +292,41 @@ class CatalystBuilder:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_usecases_tags ON usecases(tags)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_usecases_workbench ON usecases(workbench)")
         self.conn.commit()
+
+        # Pass 4: Populate FTS5 Search Indexes
+        logger.info("Pass 4: Populating FTS5 Full-Text Search Indexes...")
+        self._populate_fts_indexes(cursor)
         
         logger.info(f"Build complete. Database saved to {self.db_path}")
+
+    def _populate_fts_indexes(self, cursor: sqlite3.Cursor):
+        """Populates FTS5 virtual tables from structured relational tables."""
+        try:
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='usecases_fts'")
+            if cursor.fetchone():
+                cursor.execute("DELETE FROM usecases_fts")
+                cursor.execute("""
+                    INSERT INTO usecases_fts (id, interface_name, title, workbench, tags, context, code)
+                    SELECT id, interface_name, title, workbench, tags, context, code FROM usecases
+                """)
+
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='apis_fts'")
+            if cursor.fetchone():
+                cursor.execute("DELETE FROM apis_fts")
+                cursor.execute("""
+                    INSERT INTO apis_fts (item_type, name, description, framework, parent_interface, declared_in, data_type, readonly)
+                    SELECT 'interface', name, description, framework, '', name, '', 0 FROM interfaces
+                    UNION ALL
+                    SELECT 'enum', name, description, '', '', name, '', 0 FROM enums
+                    UNION ALL
+                    SELECT 'property', interface_name || '.' || name, '', '', interface_name, declared_in, type, readonly FROM properties
+                    UNION ALL
+                    SELECT 'method', interface_name || '.' || name, '', '', interface_name, declared_in, return_type, 0 FROM methods
+                """)
+            self.conn.commit()
+            logger.info("Successfully populated FTS5 full-text search indexes.")
+        except Exception as e:
+            logger.warning(f"Failed to populate FTS5 indexes: {e}")
 
     def import_community_recipes(self, recipes_path: str | Path | None = None):
         """Imports curated community recipes into the usecases table."""
