@@ -99,9 +99,23 @@ def run_smoke_test(db_path: Path):
     # 6. Test MCP Server Global Exception Safety
     err_res = json.loads(mcp_server.get_catia_interface(name="NonExistentInterface999"))
     assert err_res.get("isError") is True, "MCP error handling failed: Expected isError: True for missing interface."
-    logger.info("  [6/6] MCP global exception safety & error responses verified.")
+    logger.info("  [6/8] MCP global exception safety & error responses verified.")
 
-    logger.info("--- Smoke Tests Passed Successfully (6/6) ---\n")
+    # 7. Test FTS5 Full-Text Search Indexes & BM25
+    assert db._has_table("usecases_fts"), "Smoke test failed: 'usecases_fts' table missing."
+    assert db._has_table("apis_fts"), "Smoke test failed: 'apis_fts' table missing."
+    fts_recipes = db.search_recipes("export step", limit=3)
+    assert len(fts_recipes) > 0, "Smoke test failed: FTS5 recipe search returned 0 results."
+    logger.info("  [7/8] FTS5 full-text indexing & BM25 ranking verified.")
+
+    # 8. Test Client Diagnostics
+    from src.client import CatiaClient
+    client = CatiaClient()
+    report = client.get_diagnostic_report()
+    assert "CATIA V5 Diagnostic Report" in report, "Smoke test failed: Client diagnostic report invalid."
+    logger.info("  [8/8] Client COM bridge & host diagnostics verified.")
+
+    logger.info("--- Smoke Tests Passed Successfully (8/8) ---\n")
 
 
 def main():
