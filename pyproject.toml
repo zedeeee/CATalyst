@@ -22,6 +22,12 @@ dev = [
     "pywin32>=306; sys_platform == 'win32'",
 ]
 
+[project.scripts]
+catalyst = "catalyst_cli:main"
+
+[tool.setuptools]
+py-modules = ["catalyst_cli"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
