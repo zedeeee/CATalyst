@@ -9,7 +9,11 @@ import sqlite3
 import logging
 import hashlib
 from pathlib import Path
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, *args, **kwargs):
+        return iterable
 
 from .html_parser import CatiaHtmlParser
 from .inheritance import InheritanceTree
@@ -94,10 +98,16 @@ class CatalystBuilder:
             )
         ''')
         
-        # Usecases Table
+        # Usecases Table (Dual-track: Official Ground Truth + Community Recipes)
         cursor.execute('''
             CREATE TABLE usecases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 interface_name TEXT,
+                source TEXT DEFAULT 'official',
+                title TEXT,
+                workbench TEXT,
+                tags TEXT,
+                provenance_json TEXT,
                 context TEXT,
                 code TEXT,
                 FOREIGN KEY(interface_name) REFERENCES interfaces(name)
@@ -186,8 +196,20 @@ class CatalystBuilder:
                     continue
                 inserted_usecase_hashes.add(uc_hash)
                 cursor.execute(
-                    "INSERT INTO usecases (interface_name, context, code) VALUES (?, ?, ?)",
-                    (i_name, uc["context"], uc["code"])
+                    """
+                    INSERT INTO usecases (interface_name, source, title, workbench, tags, provenance_json, context, code)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        i_name,
+                        "official",
+                        f"{i_name} Official Example ({uc['context']})",
+                        i_data.get("framework", ""),
+                        i_name.lower(),
+                        json.dumps({"source": "V5Automation.chm"}, ensure_ascii=False),
+                        uc["context"],
+                        uc["code"]
+                    )
                 )
             
             # Collect all properties and methods (start with self)
@@ -225,14 +247,61 @@ class CatalystBuilder:
 
         self.conn.commit()
         
+        # Pass 3: Import Community Recipes
+        logger.info("Pass 3: Importing Curated Community Recipes...")
+        self.import_community_recipes()
+        
         # Create Indices for performance
-        cursor.execute("CREATE INDEX idx_props_interface ON properties(interface_name)")
-        cursor.execute("CREATE INDEX idx_methods_interface ON methods(interface_name)")
-        cursor.execute("CREATE INDEX idx_usecases_interface ON usecases(interface_name)")
-        cursor.execute("CREATE INDEX idx_usecases_lookup ON usecases(interface_name, context)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_props_interface ON properties(interface_name)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_methods_interface ON methods(interface_name)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_usecases_interface ON usecases(interface_name)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_usecases_lookup ON usecases(interface_name, context)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_usecases_source ON usecases(source)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_usecases_tags ON usecases(tags)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_usecases_workbench ON usecases(workbench)")
         self.conn.commit()
         
         logger.info(f"Build complete. Database saved to {self.db_path}")
+
+    def import_community_recipes(self, recipes_path: str | Path | None = None):
+        """Imports curated community recipes into the usecases table."""
+        if recipes_path is None:
+            recipes_path = Path(__file__).resolve().parent.parent.parent / "data" / "recipes" / "community_recipes.json"
+        else:
+            recipes_path = Path(recipes_path)
+
+        if not recipes_path.exists():
+            logger.info(f"Community recipes file not found at {recipes_path}, skipping.")
+            return
+
+        try:
+            with open(recipes_path, "r", encoding="utf-8") as f:
+                recipes = json.load(f)
+
+            cursor = self.conn.cursor()
+            inserted_count = 0
+            for item in recipes:
+                cursor.execute(
+                    """
+                    INSERT INTO usecases (interface_name, source, title, workbench, tags, provenance_json, context, code)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item.get("interface_name", "General"),
+                        "community",
+                        item.get("title", ""),
+                        item.get("workbench", ""),
+                        item.get("tags", ""),
+                        json.dumps(item.get("provenance", {}), ensure_ascii=False),
+                        item.get("description", ""),
+                        item.get("code", "")
+                    )
+                )
+                inserted_count += 1
+            self.conn.commit()
+            logger.info(f"Successfully imported {inserted_count} community recipes.")
+        except Exception as e:
+            logger.error(f"Failed to import community recipes: {e}")
 
     def close(self):
         """Closes the underlying SQLite database connection."""

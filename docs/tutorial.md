@@ -33,8 +33,8 @@
 
 ---
 
-## 场景二：Python (pycatia / win32com) 开发
-CATIA Automation 原生是 VBScript，但在 Python 中使用 `win32com` 时，所有对象底层都是 `CDispatch`，IDE **完全没有代码提示**。
+## 场景二：原生 Python (win32com) 开发
+CATIA Automation 原生是 VBScript，但在 Python 中使用 `win32com` 时，所有对象底层都是动态分发的 `CDispatch`，IDE **完全没有代码提示**。
 
 **实战用法**：
 当你通过 Python 拿到一个 `Viewer3D` 对象，想知道如何设置背景色时：
@@ -67,20 +67,32 @@ python catalyst_cli.py enum CatDocumentTypes
 输出将准确告诉你支持哪些枚举名，结合官方文档中枚举项的顺序（V5 枚举一般隐式对应 `0, 1, 2...` 或者你可以直接搜具体的枚举常量对应的值）：
 | Name | Description |
 |---|---|
-| `catPartDocument` | Part document |
-| `catProductDocument` | Product document |
+| `catPartDocument` | Part document (0) |
+| `catProductDocument` | Product document (1) |
+
+---
+
+## 场景四：社区实战配方库（意图检索）
+遇到复杂的工业批量需求（如批量导出、BOM 提取、拓扑提取），无需从零手写：
+
+```bash
+# 按业务意图检索社区精选工业配方
+python catalyst_cli.py recipe "export step"
+
+# 查阅特定接口的用例（支持 --source official | community）
+python catalyst_cli.py usecase Pad --source official
+```
 
 ---
 
 ## 终极武器：Agent MCP 模式 (推荐)
-如果你使用的是支持 MCP (Model Context Protocol) 的 AI IDE（例如配置了 Antigravity 的环境）：
-AI 会在你提问时，**自动**在后台调用 `get_catia_interface` 和 `search_catia_api` 补全知识。你只需要说：
+如果你使用的是支持 MCP (Model Context Protocol) 的 AI IDE（例如配置了 Antigravity / Cursor / Claude Desktop 的环境）：
+AI 会在你提问时，**自动**在后台调用 `get_catia_interface`、`search_catia_api` 以及 `get_catia_usecases`。你只需要说：
 
-> "帮我写个倒角宏，我不确定怎么用 EdgeFillet 接口，你自己查一下本地的 CATalyst 库然后给我写代码。"
+> "帮我写个倒角脚本，我不确定怎么用 EdgeFillet 接口，你自己查一下本地的 CATalyst 库然后给我写代码。"
 
 AI 会自动完成以下操作：
-1. 调用 `search_catia_api("EdgeFillet")`
-2. 发现 `VarRadEdgeFillet` / `ConstRadEdgeFillet`
-3. 调用 `get_catia_interface("ConstRadEdgeFillet")`
-4. 读取被 CATalyst 融合了 `DressUpShape` 父类属性的完整签名
-5. 直接输出 100% 可执行、零幻觉的 VBScript 代码。
+1. 调用 `search_catia_api("EdgeFillet")` 发现对应类；
+2. 调用 `get_catia_interface("ConstRadEdgeFillet")` 获取官方真实签名；
+3. （可选）调用 `get_catia_usecases(interface="ConstRadEdgeFillet")` 获取官方或社区的最佳实践代码段；
+4. 直接输出 100% 可执行、零幻觉的 Python `win32com` 脚本。
