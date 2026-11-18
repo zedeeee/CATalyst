@@ -18,7 +18,8 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
+from urllib.parse import urlparse, urlunparse
 
 from src.parser.docs_parser import (
     detect_release_from_path,
@@ -30,38 +31,108 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 LOCAL_PATHS_CONFIG = PROJECT_ROOT / "dist" / "local" / "paths.json"
 
 
-def parse_user_path(raw: Optional[str | Path]) -> Optional[Path]:
-    """
-    Cross-platform user/config path parser:
-    - Strips surrounding quotes and PowerShell drag-and-drop '& ' prefix.
-    - Expands '~' user home directory.
-    - Normalizes mixed '/' and '\\' separators for the active OS.
-    - On POSIX, unescapes terminal drag-and-drop '\\ ' spaces when needed.
-    """
+def _strip_user_input(raw: Optional[str | Path]) -> str:
     if raw is None:
-        return None
-    if isinstance(raw, Path):
-        text = str(raw).strip()
-    else:
-        text = str(raw).strip()
+        return ""
+    text = str(raw).strip()
     if not text:
-        return None
-
+        return ""
     # Handle PowerShell drag-and-drop format: & 'C:\Program Files\...'
     if text.startswith("& ") and len(text) > 2:
         text = text[2:].strip()
-
     if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
         text = text[1:-1].strip()
     else:
         text = text.strip('"').strip("'")
+    return text
 
-    if not text:
+
+def is_http_url(value: Optional[str | Path]) -> bool:
+    """Return True if value looks like an http:// or https:// URL prefix."""
+    text = _strip_user_input(value)
+    low = text.lower()
+    return low.startswith("http://") or low.startswith("https://")
+
+
+def is_unc_path(value: Optional[str | Path]) -> bool:
+    """Return True if value looks like a Samba/UNC network path (\\\\server\\share or //server/share)."""
+    text = _strip_user_input(value)
+    if is_http_url(text):
+        return False
+    return text.startswith("\\\\") or (text.startswith("//") and not text.startswith("///"))
+
+
+def classify_location_scheme(value: Optional[str | Path]) -> Optional[str]:
+    """Classify a resolved root prefix as 'http', 'smb', 'local', or None."""
+    if not value:
+        return None
+    if is_http_url(value):
+        return "http"
+    if is_unc_path(value):
+        return "smb"
+    return "local"
+
+
+def normalize_http_doc_root(raw: str | Path) -> Optional[str]:
+    """
+    Normalize an HTTP(S) doc root URL so it points to the online base directory:
+    - Strips trailing slashes and default *.htm/*.html entry pages
+    - Appends /English/online when given a top-level Bxxdoc URL (e.g. https://docs.example.com/B27doc)
+    """
+    text = _strip_user_input(raw)
+    if not is_http_url(text):
+        return None
+    parsed = urlparse(text)
+    if not parsed.netloc:
+        return None
+
+    path_parts = [seg for seg in parsed.path.split("/") if seg]
+    if path_parts and path_parts[-1].lower().endswith((".htm", ".html")):
+        path_parts.pop()
+
+    low_parts = [seg.lower() for seg in path_parts]
+    if not low_parts:
+        pass
+    elif low_parts[-1] == "online":
+        pass
+    elif low_parts[-1] == "english":
+        path_parts.append("online")
+    else:
+        path_parts.extend(["English", "online"])
+
+    clean_path = "/" + "/".join(path_parts) if path_parts else ""
+    return urlunparse((parsed.scheme.lower(), parsed.netloc, clean_path, "", "", "")).rstrip("/")
+
+
+def normalize_http_install_root(raw: str | Path) -> Optional[str]:
+    """Normalize an HTTP(S) install root URL by stripping quotes, query/fragment, and trailing slash."""
+    text = _strip_user_input(raw)
+    if not is_http_url(text):
+        return None
+    parsed = urlparse(text)
+    if not parsed.netloc:
+        return None
+    path_parts = [seg for seg in parsed.path.split("/") if seg]
+    clean_path = "/" + "/".join(path_parts) if path_parts else ""
+    return urlunparse((parsed.scheme.lower(), parsed.netloc, clean_path, "", "", "")).rstrip("/")
+
+
+def parse_user_path(raw: Optional[str | Path]) -> Optional[Path]:
+    """
+    Cross-platform user/config filesystem path parser:
+    - Strips surrounding quotes and PowerShell drag-and-drop '& ' prefix.
+    - Returns None for http(s):// URLs (handled by normalize_http_* helpers).
+    - Expands '~' user home directory.
+    - Normalizes mixed '/' and '\\' separators for the active OS while preserving UNC prefixes.
+    - On POSIX, unescapes terminal drag-and-drop '\\ ' spaces when needed.
+    """
+    text = _strip_user_input(raw)
+    if not text or is_http_url(text):
         return None
 
     expanded = os.path.expanduser(text)
     if os.name == "nt":
-        # Windows accepts both '/' and '\\'; normpath standardizes to native '\\'
+        # Windows accepts both '/' and '\\'; normpath preserves leading '\\\\server\\share' UNC prefix
         return Path(os.path.normpath(expanded))
 
     p = Path(expanded)
@@ -197,13 +268,13 @@ def load_local_paths_config(config_path: Optional[Path] = None) -> Dict[str, str
 
 
 def save_local_paths_config(
-    doc_root: Optional[Path] = None,
-    install_root: Optional[Path] = None,
-    chm_path: Optional[Path] = None,
+    doc_root: Optional[Union[Path, str]] = None,
+    install_root: Optional[Union[Path, str]] = None,
+    chm_path: Optional[Union[Path, str]] = None,
     release: str = "",
     config_path: Optional[Path] = None,
 ) -> Path:
-    """Persist machine-local roots to gitignored dist/local/paths.json."""
+    """Persist machine-local roots (local path, SMB UNC, or HTTP(S) URL) to dist/local/paths.json."""
     path = config_path or LOCAL_PATHS_CONFIG
     path.parent.mkdir(parents=True, exist_ok=True)
     current = load_local_paths_config(path)
@@ -373,3 +444,94 @@ def resolve_install_root(
                     return norm
 
     return None
+
+
+def resolve_doc_root_location(
+    explicit: Optional[str | Path] = None,
+    release_hint: str = "",
+    legacy_meta_path: str = "",
+    config_path: Optional[Path] = None,
+    catenv_dirs: Optional[List[Path]] = None,
+) -> Optional[Union[Path, str]]:
+    """
+    Runtime 5-tier doc root resolver supporting local filesystem (default), Samba UNC, and optional HTTP(S) URL.
+    Returns Path for local/SMB filesystem directories, str for http(s):// base URLs, or None.
+    """
+    # Tier 1: Explicit arg or MCP env var
+    if explicit:
+        if is_http_url(explicit):
+            return normalize_http_doc_root(explicit)
+        norm = normalize_doc_root(parse_user_path(explicit))
+        if norm:
+            return norm
+
+    env_val = os.environ.get("CATALYST_DOC_ROOT", "").strip()
+    if env_val:
+        if is_http_url(env_val):
+            return normalize_http_doc_root(env_val)
+        norm = normalize_doc_root(parse_user_path(env_val))
+        if norm:
+            return norm
+
+    # Tier 2: Machine-local dist/local/paths.json
+    local_cfg = load_local_paths_config(config_path)
+    if local_cfg.get("doc_root"):
+        cfg_val = local_cfg["doc_root"]
+        if is_http_url(cfg_val):
+            return normalize_http_doc_root(cfg_val)
+        norm = normalize_doc_root(parse_user_path(cfg_val))
+        if norm:
+            return norm
+
+    # Tiers 3-4: Legacy metadata, CATEnv, and standard local directories
+    return resolve_doc_root(
+        explicit=None,
+        release_hint=release_hint,
+        legacy_meta_path=legacy_meta_path,
+        config_path=config_path,
+        catenv_dirs=catenv_dirs,
+    )
+
+
+def resolve_install_root_location(
+    explicit: Optional[str | Path] = None,
+    release_hint: str = "",
+    legacy_meta_path: str = "",
+    config_path: Optional[Path] = None,
+    catenv_dirs: Optional[List[Path]] = None,
+) -> Optional[Union[Path, str]]:
+    """
+    Runtime 5-tier install root resolver supporting local filesystem (default), Samba UNC, and optional HTTP(S) URL.
+    Returns Path for local/SMB filesystem directories, str for http(s):// base URLs, or None.
+    """
+    if explicit:
+        if is_http_url(explicit):
+            return normalize_http_install_root(explicit)
+        norm = normalize_install_root(parse_user_path(explicit))
+        if norm:
+            return norm
+
+    env_val = os.environ.get("CATALYST_INSTALL_ROOT", "").strip()
+    if env_val:
+        if is_http_url(env_val):
+            return normalize_http_install_root(env_val)
+        norm = normalize_install_root(parse_user_path(env_val))
+        if norm:
+            return norm
+
+    local_cfg = load_local_paths_config(config_path)
+    if local_cfg.get("install_root"):
+        cfg_val = local_cfg["install_root"]
+        if is_http_url(cfg_val):
+            return normalize_http_install_root(cfg_val)
+        norm = normalize_install_root(parse_user_path(cfg_val))
+        if norm:
+            return norm
+
+    return resolve_install_root(
+        explicit=None,
+        release_hint=release_hint,
+        legacy_meta_path=legacy_meta_path,
+        config_path=config_path,
+        catenv_dirs=catenv_dirs,
+    )

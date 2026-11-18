@@ -15,9 +15,16 @@ from typing import Optional
 
 from src.engine.local_config import (
     LOCAL_PATHS_CONFIG,
+    is_http_url,
     is_running_in_venv,
+    is_unc_path,
+    normalize_http_doc_root,
+    normalize_http_install_root,
+    parse_user_path,
     resolve_doc_root,
+    resolve_doc_root_location,
     resolve_install_root,
+    resolve_install_root_location,
     save_local_paths_config,
 )
 from src.parser.docs_builder import CatalystDocsBuilder
@@ -33,16 +40,23 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
-def _prompt_path_interactive(label: str, normalizer) -> Optional[Path]:
+def _prompt_path_interactive(label: str, normalizer, allow_http: bool = False):
     if not sys.stdin or not sys.stdin.isatty():
         return None
     try:
-        raw = input(f"Enter {label} (leave blank to skip): ").strip().strip('"').strip("'")
+        raw = input(f"Enter {label} (leave blank to skip): ").strip()
     except (EOFError, KeyboardInterrupt):
         return None
     if not raw:
         return None
-    norm = normalizer(Path(raw))
+    if allow_http and is_http_url(raw):
+        norm_url = normalize_http_doc_root(raw) if normalizer is normalize_doc_root else normalize_http_install_root(raw)
+        if norm_url:
+            return norm_url
+        logger.warning(f"Invalid HTTP(S) URL: {raw}")
+        return None
+    parsed = parse_user_path(raw)
+    norm = normalizer(parsed) if parsed else None
     if not norm:
         logger.warning(f"Path not found or invalid: {raw}")
         return None
@@ -120,7 +134,7 @@ def main() -> None:
     parser.add_argument(
         "--set-paths",
         action="store_true",
-        help="Only configure and persist machine-local doc/install roots to dist/local/paths.json without rebuilding DB.",
+        help="Only bind/switch doc/install prefix in dist/local/paths.json (local path, SMB UNC, or HTTP(S) URL) without rebuilding DB.",
     )
     parser.add_argument(
         "--no-save-paths",
@@ -147,17 +161,42 @@ def main() -> None:
             sys.executable,
         )
 
-    doc_root = resolve_doc_root(explicit=args.doc_root or None, release_hint=args.release)
-    rel_hint = args.release.strip() or detect_release_from_path(doc_root)
-    install_root = resolve_install_root(explicit=args.install_root or None, release_hint=rel_hint)
-    if rel_hint == "unknown":
-        rel_hint = detect_release_from_path(install_root)
+    if not args.set_paths and (is_http_url(args.doc_root) or is_http_url(args.install_root)):
+        logger.error(
+            "Building catalyst_docs.db requires a local directory or mounted/SMB filesystem path "
+            "(HTTP(S) URLs cannot be crawled for extraction).\n"
+            "If you already have a pre-built dist/local/catalyst_docs.db and only want to bind an HTTP(S) prefix, "
+            "run with `--set-paths`: `uv run python build_docs.py --set-paths --doc-root <https://...>`."
+        )
+        sys.exit(1)
 
-    # Interactive prompt on fresh machines when auto-discovery finds nothing
+    if args.set_paths:
+        doc_root = resolve_doc_root_location(explicit=args.doc_root or None, release_hint=args.release)
+        rel_hint = args.release.strip() or detect_release_from_path(doc_root)
+        install_root = resolve_install_root_location(explicit=args.install_root or None, release_hint=rel_hint)
+        if rel_hint == "unknown":
+            rel_hint = detect_release_from_path(install_root)
+    else:
+        doc_root = resolve_doc_root(explicit=args.doc_root or None, release_hint=args.release)
+        rel_hint = args.release.strip() or detect_release_from_path(doc_root)
+        install_root = resolve_install_root(explicit=args.install_root or None, release_hint=rel_hint)
+        if rel_hint == "unknown":
+            rel_hint = detect_release_from_path(install_root)
+
+    # Interactive prompt on fresh machines when auto-discovery finds nothing (local path preferred by default)
     if not doc_root and (args.set_paths or not install_root):
-        doc_root = _prompt_path_interactive("CATIA offline doc root (e.g. D:\\Dassault\\B27doc)", normalize_doc_root)
+        prompt_label = (
+            "CATIA doc root (local path preferred, e.g. D:\\Dassault\\B27doc; optional SMB or HTTP URL)"
+            if args.set_paths
+            else "CATIA offline doc root (local or SMB path, e.g. D:\\Dassault\\B27doc)"
+        )
+        doc_root = _prompt_path_interactive(prompt_label, normalize_doc_root, allow_http=args.set_paths)
     if not install_root and (args.set_paths or not doc_root):
-        install_root = _prompt_path_interactive("CATIA install root (e.g. D:\\Dassault\\B27)", normalize_install_root)
+        install_root = _prompt_path_interactive(
+            "CATIA install root (local path, e.g. D:\\Dassault\\B27)",
+            normalize_install_root,
+            allow_http=args.set_paths,
+        )
 
     if rel_hint == "unknown":
         rel_hint = detect_release_from_path(doc_root) or detect_release_from_path(install_root) or "unknown"
@@ -202,13 +241,18 @@ def main() -> None:
     if only_modules:
         logger.info(f"  Modules Only : {', '.join(only_modules)}")
 
+    # Cap default worker count on SMB/UNC shares to avoid thrashing remote HDD I/O
+    effective_workers: Optional[int] = args.workers if args.workers > 0 else (4 if is_unc_path(doc_root) else None)
+    if args.workers <= 0 and is_unc_path(doc_root):
+        logger.info("  SMB/UNC Share: Auto-throttling HTML parser workers to 4 for stable network I/O.")
+
     builder = CatalystDocsBuilder(
         output_db=args.output,
         doc_root=doc_root,
         install_root=install_root,
         release=rel_hint,
         only_modules=only_modules,
-        workers=args.workers if args.workers > 0 else None,
+        workers=effective_workers,
     )
     summary = builder.build()
 

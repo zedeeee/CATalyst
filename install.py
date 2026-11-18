@@ -170,14 +170,18 @@ def resolve_client_config_path(client: str, explicit_config: str = "") -> Path:
     raise ValueError(f"Unsupported client '{client}'. Use antigravity, cursor, claude, or --config.")
 
 
-def _top_level_catia_dir(path: Optional[Path]) -> Optional[str]:
+def _top_level_catia_dir(path: Optional[Path | str]) -> Optional[str]:
     """
     Normalize .../B27/win_b64 -> .../B27 and .../B27doc/English/online -> .../B27doc,
-    returning native OS path separators consistent with mcp_config.json command/args.
+    returning native OS path separators (or normalized HTTP(S) URL unchanged).
     """
     if not path:
         return None
-    p = path.resolve()
+    from src.engine.local_config import is_http_url, normalize_http_doc_root
+
+    if isinstance(path, str) and is_http_url(path):
+        return normalize_http_doc_root(path) or path.strip().rstrip("/")
+    p = Path(path).resolve()
     if p.name.lower() in ("win_b64", "intel_a"):
         return str(p.parent)
     if p.name.lower() == "online" and p.parent.name.lower() == "english":
@@ -302,8 +306,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--chm", default="", help="Explicit path to local V5Automation.chm.")
     parser.add_argument("--install-root", default="", help="Explicit path to CATIA Bxx or Bxx/win_b64.")
-    parser.add_argument("--doc-root", default="", help="Explicit path to CATIA Bxxdoc offline docs (optional).")
+    parser.add_argument("--doc-root", default="", help="Explicit path to CATIA Bxxdoc (local preferred; optional SMB path, or HTTP(S) URL when reusing existing catalyst_docs.db).")
     parser.add_argument("--release", default="", help="Explicit CATIA release tag (e.g. B27).")
+    parser.add_argument("--workers", type=int, default=0, help="Worker processes for offline docs build (0 = auto).")
     parser.add_argument("--7z", dest="seven_zip", default="", help="Explicit path to 7z/7za executable (recommended).")
     parser.add_argument(
         "--use-hh",
@@ -336,10 +341,13 @@ def main() -> None:
     # Deferred project imports so `--help` works instantly even before `uv sync` installs dependencies
     from src.engine.local_config import (
         LOCAL_PATHS_CONFIG,
+        is_http_url,
         is_running_in_venv,
+        normalize_http_doc_root,
         parse_user_path,
         resolve_chm_path,
         resolve_doc_root,
+        resolve_doc_root_location,
         resolve_install_root,
         save_local_paths_config,
     )
@@ -409,11 +417,22 @@ def main() -> None:
                     release = det
                     break
 
-    doc_root: Optional[Path] = None
+    docs_db = PROJECT_ROOT / "dist" / "local" / "catalyst_docs.db"
+    doc_root: Optional[Path | str] = None
     if not args.skip_docs:
-        doc_root = resolve_doc_root(explicit=args.doc_root or None, release_hint=release)
-        if not doc_root and interactive:
-            doc_root = _prompt_for_doc_root(release)
+        if args.doc_root and is_http_url(args.doc_root):
+            if docs_db.is_file() and not args.rebuild:
+                doc_root = normalize_http_doc_root(args.doc_root)
+            else:
+                print("\n[ERROR] 从零构建 catalyst_docs.db 仅支持本地目录或 SMB 共享路径，不能直接抓取 HTTP(S) URL。")
+                print("        请先通过本地/SMB 路径建库，或在已存在 dist/local/catalyst_docs.db 时再传入 HTTP(S) 前缀。")
+                sys.exit(1)
+        elif docs_db.is_file() and not args.rebuild:
+            doc_root = resolve_doc_root_location(explicit=args.doc_root or None, release_hint=release)
+        else:
+            doc_root = resolve_doc_root(explicit=args.doc_root or None, release_hint=release)
+            if not doc_root and interactive:
+                doc_root = _prompt_for_doc_root(release)
 
     if unpacker_kind == "7z":
         unpacker_label = f"7-Zip [推荐] ({unpacker_path})"
@@ -457,10 +476,9 @@ def main() -> None:
         print(f"  [SKIP] 已存在核心数据库: {core_db}（如需强制重建请加 --rebuild）")
 
     # 3. Optional Offline Docs DB (dist/local/catalyst_docs.db)
-    docs_db = PROJECT_ROOT / "dist" / "local" / "catalyst_docs.db"
     built_docs = False
     if not args.skip_docs and doc_root:
-        if args.rebuild or not docs_db.is_file():
+        if (args.rebuild or not docs_db.is_file()) and not (isinstance(doc_root, str) and is_http_url(doc_root)):
             print("\n[3/4] 构建离线文档扩展库 (dist/local/catalyst_docs.db)...")
             docs_cmd = [
                 sys.executable,
@@ -473,11 +491,13 @@ def main() -> None:
                 docs_cmd.extend(["--install-root", str(install_root)])
             if release:
                 docs_cmd.extend(["--release", release])
+            if args.workers > 0:
+                docs_cmd.extend(["--workers", str(args.workers)])
             sys.stdout.flush()
             subprocess.run(docs_cmd, cwd=str(PROJECT_ROOT), check=True)
             built_docs = True
         else:
-            print(f"\n[3/4] [SKIP] 已存在离线文档库: {docs_db}")
+            print(f"\n[3/4] [SKIP] 已存在离线文档库: {docs_db}（已绑定运行前缀: {doc_root}）")
             built_docs = True
     else:
         entry_cmd = ".\\install.ps1" if os.name == "nt" else "./install.sh"
