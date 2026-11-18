@@ -9,7 +9,7 @@
 
 ## 2. AI 快速部署 SOP (Deployment Runbook)
 当用户要求安装或部署本项目的 MCP 时，按最短路径执行：
-1. **检查现有状态**：确认 `dist/catalyst.db` 是否存在，以及目标客户端配置文件（Antigravity：`~/.gemini/config/mcp_config.json`；Cursor：`~/.cursor/mcp.json`；Claude：`claude_desktop_config.json`）是否已注册 `catalyst`。
+1. **检查现有状态**：确认 `dist/catalyst.db` 是否存在，以及目标 MCP 客户端配置文件（Antigravity：`~/.gemini/config/mcp_config.json`；Claude：`claude_desktop_config.json`；Cursor：`~/.cursor/mcp.json`；或 Codex 等其他 MCP Agent / 编辑器配置）是否已注册 `catalyst`。
 2. **依赖与环境要求**：必需 Python 3.10+ 与 `uv`；解包 `.chm` 时**强烈推荐 7-Zip (`7z`)**。
    - 若缺失 `7z` 且需要解包 `.chm`，**严禁静默切换方案**——询问用户选择「先安装 7-Zip（推荐） / 手动指定 `7z` 路径 / 显式加 `--use-hh` 使用 Windows `hh.exe`」。
 3. **执行一键安装**：

@@ -79,7 +79,11 @@ CATalyst 采用**纯只读知识平面**设计（不耦合实时 `win32com` 会�
 ## 4. 跨平台路径与含空格路径规范
 
 1. **数据库内部存储**：所有相对路径统一使用 POSIX `/`（例如 `cceug_C2/cceugbt0102.htm`），确保同一个 `catalyst_docs.db` 可在 Windows / macOS / Linux 间直接拷贝复用。
-2. **运行时路径还原**：`docs_db._join_portable_rel()` 将 `/` 或 `\` 统一拆分为路径段后调用 `Path.joinpath(*parts)`，输出当前 OS 原生绝对路径。
+2. **运行时多协议前缀替换（本地默认优先）**：同一份 `catalyst_docs.db` 拷贝到另一台电脑后无需重建，只需通过 `CATALYST_DOC_ROOT` 或 `uv run python build_docs.py --set-paths --doc-root <prefix>` 即可更换前缀（数据提取建库仍仅支持文件系统路径）：
+   - **本地目录（默认推荐）**：如 `D:\CATIA\B27doc` 或 `/mnt/catia/B27doc` → 返回原生 `abs_path`（可直接本地读取文件/截图）。
+   - **Samba / UNC 共享（可选）**：如 `\\nas-server\share\B27doc` → 返回 UNC `abs_path`，网络中断时自动捕获 `OSError` 优雅降级，全文检索不受影响。
+   - **HTTP(S) 在线文档站（可选高级）**：如 `https://docs.example.com/B27doc`（支持直接粘贴 `.../CATIA_P3_default.htm` 首页，自动归一化至 `/English/online`）→ 零延迟拼接返回 `url` 字段（不填 `abs_path`）。
+3. **运行时路径还原**：`docs_db._join_portable_rel()` 将 `/` 或 `\` 统一拆分为路径段后调用 `Path.joinpath(*parts)`，输出当前 OS 原生绝对路径。
 3. **用户输入解析**：`local_config.parse_user_path()` 统一处理双引号/单引号、PowerShell 拖放 `& '...'` 前缀、POSIX 拖放 `\ ` 转义空格、`~` 家目录展开以及 `/` 与 `\` 混用。
 4. **MCP 配置文件（`mcp_config.json`）**：`command`、`args`、`env` 全部统一使用当前 OS 原生分隔符（Windows 为 `\`，macOS/Linux 为 `/`），通过 JSON 数组传参天然兼容含空格路径。
 5. **CHM 解包与空格处理**：

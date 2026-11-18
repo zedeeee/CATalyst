@@ -43,7 +43,7 @@ CATalyst 严格坚守**纯只读知识大脑定位**（不耦合任何活体 `wi
             ┌────────────────────────────────┼────────────────────────────────┐
             ▼                                ▼                                ▼
      MCP Server (10 Tools)            CLI (catalyst_cli.py)             Agent Skill
-   (Antigravity / Cursor / Claude)      (< 300 Token 卡片)              (零预载按需召回)
+(Antigravity / Claude / Codex 等)      (< 300 Token 卡片)              (零预载按需召回)
 ```
 
 ### 核心能力与突破
@@ -88,7 +88,7 @@ cd CATalyst
 
 # 常用参数示例：
 # .\install.ps1 --chm "D:\Dassault\B27\win_b64\code\bin\V5Automation.chm"
-# .\install.ps1 --client cursor     # 支持 antigravity（默认）、cursor、claude 或 --config <路径>
+# .\install.ps1 --client claude     # 内置 antigravity（默认）、claude、cursor，或用 --config <路径> 适配 Codex 等其他 MCP Agent / 编辑器
 # .\install.ps1 --yes               # 非交互模式（Windows 无 7-Zip 时需显式追加 --use-hh）
 ```
 
@@ -147,7 +147,7 @@ uv run python build_docs.py \
 
 ## MCP Server 配置
 
-运行 `.\install.ps1` / `./install.sh` 会自动将 `catalyst` 合并写入目标 MCP 客户端配置（Antigravity `~/.gemini/config/mcp_config.json`、Cursor `~/.cursor/mcp.json` 或 Claude Desktop `claude_desktop_config.json`）。如需手动配置，可参考：
+运行 `.\install.ps1` / `./install.sh` 会自动将 `catalyst` 合并写入目标 MCP 客户端配置（支持 Antigravity `~/.gemini/config/mcp_config.json`、Claude `claude_desktop_config.json`、Cursor `~/.cursor/mcp.json`，以及通过 `--config <路径>` 适配 Codex、Claude Code 等其他支持 MCP 的 AI Agent 与代码编辑器）。如需手动配置，可参考：
 
 ```json
 {
@@ -173,7 +173,7 @@ uv run python build_docs.py \
 }
 ```
 
-> 请使用当前系统的原生路径分隔符（Windows 在 JSON 中写 `\\`，macOS/Linux 写 `/`）。若仅使用 6 个核心 COM API / Recipe 工具，可省略 `CATALYST_DOC_ROOT`。
+> 请使用当前系统的原生路径分隔符（Windows 在 JSON 中写 `\\`，macOS/Linux 写 `/`）。`CATALYST_DOC_ROOT` 默认优先使用本机 `Bxxdoc` 目录（若仅使用 6 个核心 COM API / Recipe 工具可省略）。将已构建好的 `catalyst_docs.db` 拷贝到另一台电脑复用时，无需重建库，直接通过 `CATALYST_DOC_ROOT` 或 `uv run python build_docs.py --set-paths --doc-root <前缀>` 即可更换运行时前缀（优先本地路径，亦可选 Samba UNC 或 `http(s)://` 在线地址）。
 
 可选环境变量：
 - `CATALYST_DB_PATH`：覆写核心 `catalyst.db` 路径。

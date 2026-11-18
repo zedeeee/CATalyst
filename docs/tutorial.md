@@ -109,9 +109,9 @@ uv run python catalyst_cli.py samples "AISC_C" --ext .catpart
 
 ---
 
-## 场景六：AI IDE 自动调用 MCP（推荐）
+## 场景六：AI Agent / 编辑器自动调用 MCP（推荐）
 
-运行 `.\install.ps1`（或 `./install.sh`）将 `catalyst` 注册到 Antigravity / Cursor / Claude 后，无需手动敲 CLI，直接自然语言提问即可：
+运行 `.\install.ps1`（或 `./install.sh`）将 `catalyst` 注册到 Antigravity、Claude Code、Codex 或其他支持 MCP 的 AI Agent / 代码编辑器后，无需手动敲 CLI，直接自然语言提问即可：
 
 > "帮我写一个 Python `win32com` 脚本，给当前 Part 里的倒角特征读取半径并批量导出 STEP，先用 CATalyst 确认 `ConstRadEdgeFillet` 接口签名和 STEP 导出配方。"
 

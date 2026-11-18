@@ -43,7 +43,7 @@ CATalyst enforces a **strict read-only knowledge plane** (zero live `win32com` c
             ┌────────────────────────────────┼────────────────────────────────┐
             ▼                                ▼                                ▼
      MCP Server (10 Tools)            CLI (catalyst_cli.py)             Agent Skill
-   (Antigravity / Cursor / Claude)      (< 300 Token Cards)         (On-Demand Recall)
+(Antigravity / Claude / Codex / IDEs)  (< 300 Token Cards)         (On-Demand Recall)
 ```
 
 ### Key Architectural Breakthroughs
@@ -88,7 +88,7 @@ cd CATalyst
 
 # Common options:
 # .\install.ps1 --chm "D:\Dassault\B27\win_b64\code\bin\V5Automation.chm"
-# .\install.ps1 --client cursor     # Supports: antigravity (default), cursor, claude, or --config <path>
+# .\install.ps1 --client claude     # Built-in presets: antigravity (default), claude, cursor; or --config <path> for Codex / other MCP agents & IDEs
 # .\install.ps1 --yes               # Non-interactive (add --use-hh on Windows if 7-Zip is not installed)
 ```
 
@@ -147,7 +147,7 @@ On a fresh machine, CATalyst resolves local CATIA doc/install roots in strict pr
 
 ## MCP Server Configuration
 
-Running `.\install.ps1` / `./install.sh` automatically registers `catalyst` in your MCP client config (Antigravity `~/.gemini/config/mcp_config.json`, Cursor `~/.cursor/mcp.json`, or Claude Desktop `claude_desktop_config.json`). For manual setup, use:
+Running `.\install.ps1` / `./install.sh` automatically registers `catalyst` in your MCP client config (Antigravity `~/.gemini/config/mcp_config.json`, Claude `claude_desktop_config.json`, Cursor `~/.cursor/mcp.json`, or any other MCP-compatible Agent / AI IDE such as Claude Code & Codex via `--config <path>`). For manual setup, use:
 
 ```json
 {
@@ -173,7 +173,7 @@ Running `.\install.ps1` / `./install.sh` automatically registers `catalyst` in y
 }
 ```
 
-> Use native path separators for your OS (e.g. `\\` in JSON on Windows, `/` on macOS/Linux). `CATALYST_DOC_ROOT` is optional if you only use the 6 core COM API/Recipe tools.
+> Use native path separators for your OS (e.g. `\\` in JSON on Windows, `/` on macOS/Linux). `CATALYST_DOC_ROOT` defaults to a local `Bxxdoc` directory (and is optional if you only use the 6 core COM API/Recipe tools). When reusing a pre-built `catalyst_docs.db` on another machine, you can swap the runtime prefix without rebuilding via `CATALYST_DOC_ROOT` or `uv run python build_docs.py --set-paths --doc-root <prefix>` (local directory preferred; optional SMB UNC or `http(s)://` base URL also supported).
 
 Optional environment overrides:
 - `CATALYST_DB_PATH`: Custom path to `catalyst.db`.
