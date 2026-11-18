@@ -20,10 +20,56 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from src.parser.docs_parser import normalize_doc_root, normalize_install_root
+from src.parser.docs_parser import (
+    detect_release_from_path,
+    normalize_doc_root,
+    normalize_install_root,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 LOCAL_PATHS_CONFIG = PROJECT_ROOT / "dist" / "local" / "paths.json"
+
+
+def parse_user_path(raw: Optional[str | Path]) -> Optional[Path]:
+    """
+    Cross-platform user/config path parser:
+    - Strips surrounding quotes and PowerShell drag-and-drop '& ' prefix.
+    - Expands '~' user home directory.
+    - Normalizes mixed '/' and '\\' separators for the active OS.
+    - On POSIX, unescapes terminal drag-and-drop '\\ ' spaces when needed.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, Path):
+        text = str(raw).strip()
+    else:
+        text = str(raw).strip()
+    if not text:
+        return None
+
+    # Handle PowerShell drag-and-drop format: & 'C:\Program Files\...'
+    if text.startswith("& ") and len(text) > 2:
+        text = text[2:].strip()
+
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
+        text = text[1:-1].strip()
+    else:
+        text = text.strip('"').strip("'")
+
+    if not text:
+        return None
+
+    expanded = os.path.expanduser(text)
+    if os.name == "nt":
+        # Windows accepts both '/' and '\\'; normpath standardizes to native '\\'
+        return Path(os.path.normpath(expanded))
+
+    p = Path(expanded)
+    if not p.exists() and "\\ " in expanded:
+        unescaped = Path(expanded.replace("\\ ", " "))
+        if unescaped.exists():
+            return unescaped
+    return p
 
 
 def is_running_in_venv() -> bool:
@@ -37,6 +83,8 @@ def is_running_in_venv() -> bool:
 
 
 def _catenv_dirs() -> List[Path]:
+    if os.name != "nt":
+        return []
     dirs: List[Path] = []
     prog_data = os.environ.get("ProgramData") or os.environ.get("ALLUSERSPROFILE")
     if prog_data:
@@ -53,7 +101,9 @@ def discover_from_catenv(
 ) -> Tuple[Optional[Path], Optional[Path]]:
     """
     Parse Dassault CATEnv *.txt files for CATDocView and CATInstallPath.
-    Handles semicolon-separated multi-path entries and prefers files matching release_hint (e.g. B27).
+    Handles semicolon-separated multi-path entries, prefers files matching release_hint (e.g. B27),
+    and enforces release alignment so third-party plugin docs from another release (e.g. B21)
+    are never mixed with the active CATIA installation (e.g. B27).
     """
     dirs = catenv_dirs if catenv_dirs is not None else _catenv_dirs()
     env_files: List[Path] = []
@@ -73,10 +123,11 @@ def discover_from_catenv(
 
     env_files.sort(key=_priority)
 
-    found_doc: Optional[Path] = None
-    found_install: Optional[Path] = None
+    install_candidates: List[Tuple[Path, str, bool]] = []
+    doc_candidates: List[Tuple[Path, str, bool, bool]] = []
 
     for fp in env_files:
+        is_official_env = fp.name.upper().startswith("CATIA")
         try:
             text = fp.read_text(encoding="utf-8", errors="ignore")
         except OSError:
@@ -87,20 +138,48 @@ def discover_from_catenv(
                 continue
             k, v = s.split("=", 1)
             k = k.strip()
-            if k == "CATDocView" and found_doc is None:
-                for part in v.split(";"):
-                    cand = normalize_doc_root(Path(part.strip())) if part.strip() else None
-                    # Verify it looks like a real Bxxdoc online tree (contains *_C2 or *TOC.xml)
-                    if cand and (list(cand.glob("*TOC.xml")) or list(cand.glob("*_C2"))):
-                        found_doc = cand
-                        break
-            elif k == "CATInstallPath" and found_install is None:
+            if k == "CATInstallPath":
                 for part in v.split(";"):
                     cand = normalize_install_root(Path(part.strip())) if part.strip() else None
                     if cand and (cand / "resources" / "msgcatalog").is_dir():
-                        found_install = cand
-                        break
-        if found_doc and found_install:
+                        cand_rel = detect_release_from_path(cand).upper()
+                        install_candidates.append((cand, cand_rel, is_official_env))
+            elif k == "CATDocView":
+                for part in v.split(";"):
+                    cand = normalize_doc_root(Path(part.strip())) if part.strip() else None
+                    if not cand:
+                        continue
+                    has_toc = bool(list(cand.glob("*TOC.xml")))
+                    has_modules = bool(list(cand.glob("*_C2")))
+                    if has_toc or has_modules:
+                        cand_rel = detect_release_from_path(cand).upper()
+                        doc_candidates.append((cand, cand_rel, is_official_env, has_toc))
+
+    def _matches_release(cand_rel: str, expected_rel: str) -> bool:
+        if not expected_rel or expected_rel == "UNKNOWN":
+            return True
+        if not cand_rel or cand_rel == "UNKNOWN":
+            return True
+        return cand_rel == expected_rel
+
+    found_install: Optional[Path] = None
+    for cand, cand_rel, _ in install_candidates:
+        if _matches_release(cand_rel, rel_up):
+            found_install = cand
+            break
+
+    # Lock doc discovery to the active release (explicit hint or detected install release)
+    target_rel = rel_up if (rel_up and rel_up != "UNKNOWN") else (
+        detect_release_from_path(found_install).upper() if found_install else ""
+    )
+
+    found_doc: Optional[Path] = None
+    # Pass 1: prefer release-aligned docs from official CATIA*.txt or with a full TOC
+    for cand, cand_rel, is_official_env, has_toc in doc_candidates:
+        if not _matches_release(cand_rel, target_rel):
+            continue
+        if is_official_env or has_toc:
+            found_doc = cand
             break
 
     return found_doc, found_install
@@ -147,27 +226,27 @@ def resolve_chm_path(
     catenv_dirs: Optional[List[Path]] = None,
 ) -> Optional[Path]:
     """
-    5-tier resolution for user's licensed V5Automation.chm (BYOD compliance):
+    5-tier resolution for local V5Automation.chm:
     1. Explicit --chm arg or CATALYST_CHM_PATH env var
     2. Machine-local dist/local/paths.json ('chm_path')
     3. Official Dassault CATEnv (<CATInstallPath>/code/bin/V5Automation.chm)
-    4. Project local drop-in data/V5Automation.chm (gitignored) or default Program Files
+    4. Project local drop-in data/V5Automation.chm (gitignored) or default install directory
     """
     if explicit:
-        p = Path(explicit)
-        if p.is_file():
+        p = parse_user_path(explicit)
+        if p and p.is_file():
             return p.resolve()
 
     env_val = os.environ.get("CATALYST_CHM_PATH", "").strip()
     if env_val:
-        p = Path(env_val)
-        if p.is_file():
+        p = parse_user_path(env_val)
+        if p and p.is_file():
             return p.resolve()
 
     local_cfg = load_local_paths_config(config_path)
     if local_cfg.get("chm_path"):
-        p = Path(local_cfg["chm_path"])
-        if p.is_file():
+        p = parse_user_path(local_cfg["chm_path"])
+        if p and p.is_file():
             return p.resolve()
 
     inst = resolve_install_root(
@@ -201,25 +280,25 @@ def resolve_doc_root(
     """5-tier resolution for CATIA offline documentation online directory."""
     # Tier 1: Explicit arg or MCP env var
     if explicit:
-        norm = normalize_doc_root(Path(explicit))
+        norm = normalize_doc_root(parse_user_path(explicit))
         if norm:
             return norm
     env_val = os.environ.get("CATALYST_DOC_ROOT", "").strip()
     if env_val:
-        norm = normalize_doc_root(Path(env_val))
+        norm = normalize_doc_root(parse_user_path(env_val))
         if norm:
             return norm
 
     # Tier 2: Machine-local dist/local/paths.json
     local_cfg = load_local_paths_config(config_path)
     if local_cfg.get("doc_root"):
-        norm = normalize_doc_root(Path(local_cfg["doc_root"]))
+        norm = normalize_doc_root(parse_user_path(local_cfg["doc_root"]))
         if norm:
             return norm
 
     # Legacy DB metadata fallback (schema v1 compatibility)
     if legacy_meta_path:
-        norm = normalize_doc_root(Path(legacy_meta_path))
+        norm = normalize_doc_root(parse_user_path(legacy_meta_path))
         if norm:
             return norm
 
@@ -228,18 +307,19 @@ def resolve_doc_root(
     if env_doc:
         return env_doc
 
-    # Tier 4: Standard default install directory
-    base = Path(r"C:\Program Files\Dassault Systemes")
-    if base.is_dir():
-        rel = release_hint.strip().upper()
-        if rel and rel != "UNKNOWN":
-            norm = normalize_doc_root(base / f"{rel}doc")
-            if norm:
-                return norm
-        for cand in sorted(base.glob("B*doc"), reverse=True):
-            norm = normalize_doc_root(cand)
-            if norm:
-                return norm
+    # Tier 4: Standard default install directory (Windows only)
+    if os.name == "nt":
+        base = Path(r"C:\Program Files\Dassault Systemes")
+        if base.is_dir():
+            rel = release_hint.strip().upper()
+            if rel and rel != "UNKNOWN":
+                norm = normalize_doc_root(base / f"{rel}doc")
+                if norm:
+                    return norm
+            for cand in sorted(base.glob("B*doc"), reverse=True):
+                norm = normalize_doc_root(cand)
+                if norm:
+                    return norm
 
     return None
 
@@ -253,23 +333,23 @@ def resolve_install_root(
 ) -> Optional[Path]:
     """5-tier resolution for CATIA win_b64 installation directory."""
     if explicit:
-        norm = normalize_install_root(Path(explicit))
+        norm = normalize_install_root(parse_user_path(explicit))
         if norm:
             return norm
     env_val = os.environ.get("CATALYST_INSTALL_ROOT", "").strip()
     if env_val:
-        norm = normalize_install_root(Path(env_val))
+        norm = normalize_install_root(parse_user_path(env_val))
         if norm:
             return norm
 
     local_cfg = load_local_paths_config(config_path)
     if local_cfg.get("install_root"):
-        norm = normalize_install_root(Path(local_cfg["install_root"]))
+        norm = normalize_install_root(parse_user_path(local_cfg["install_root"]))
         if norm:
             return norm
 
     if legacy_meta_path:
-        norm = normalize_install_root(Path(legacy_meta_path))
+        norm = normalize_install_root(parse_user_path(legacy_meta_path))
         if norm:
             return norm
 
@@ -277,18 +357,19 @@ def resolve_install_root(
     if env_install:
         return env_install
 
-    base = Path(r"C:\Program Files\Dassault Systemes")
-    if base.is_dir():
-        rel = release_hint.strip().upper()
-        if rel and rel != "UNKNOWN":
-            norm = normalize_install_root(base / rel)
-            if norm and (norm / "resources" / "msgcatalog").is_dir():
-                return norm
-        for cand in sorted(base.glob("B*"), reverse=True):
-            if cand.name.lower().endswith("doc"):
-                continue
-            norm = normalize_install_root(cand)
-            if norm and (norm / "resources" / "msgcatalog").is_dir():
-                return norm
+    if os.name == "nt":
+        base = Path(r"C:\Program Files\Dassault Systemes")
+        if base.is_dir():
+            rel = release_hint.strip().upper()
+            if rel and rel != "UNKNOWN":
+                norm = normalize_install_root(base / rel)
+                if norm and (norm / "resources" / "msgcatalog").is_dir():
+                    return norm
+            for cand in sorted(base.glob("B*"), reverse=True):
+                if cand.name.lower().endswith("doc"):
+                    continue
+                norm = normalize_install_root(cand)
+                if norm and (norm / "resources" / "msgcatalog").is_dir():
+                    return norm
 
     return None

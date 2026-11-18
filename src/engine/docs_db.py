@@ -65,6 +65,12 @@ def resolve_docs_db_path(db_path: Optional[Union[str, Path]] = None) -> Optional
     return None
 
 
+def _join_portable_rel(base: Path, rel_path: str) -> Path:
+    """Safely join a portable relative path (supporting '/' or '\\') onto a local OS base path."""
+    parts = [p for p in (rel_path or "").replace("\\", "/").split("/") if p and p != "."]
+    return base.joinpath(*parts) if parts else base
+
+
 def resolve_runtime_doc_root(meta: Dict[str, str]) -> Optional[Path]:
     """5-tier dynamic doc root resolution (MCP env -> dist/local/paths.json -> CATEnv -> default)."""
     return _resolve_doc_root_5tier(
@@ -310,7 +316,7 @@ class CatalystDocsDB:
         def _attach_abs(rel_p: str) -> Dict[str, Any]:
             entry: Dict[str, Any] = {"rel_path": rel_p}
             if doc_root_path:
-                cand = doc_root_path / rel_p
+                cand = _join_portable_rel(doc_root_path, rel_p)
                 if cand.exists():
                     entry["abs_path"] = str(cand)
             return entry
@@ -336,7 +342,7 @@ class CatalystDocsDB:
         }
 
         if doc_root_path:
-            page_abs = doc_root_path / row_dict["doc_id"]
+            page_abs = _join_portable_rel(doc_root_path, row_dict["doc_id"])
             if page_abs.exists():
                 result["abs_path"] = str(page_abs)
         else:
@@ -569,7 +575,7 @@ class CatalystDocsDB:
             # Dynamically resolve local absolute path from configured MCP roots
             base_root = doc_root_path if rd["source"] == "doc_samples" else install_root_path
             if base_root:
-                cand = base_root / rel_path
+                cand = _join_portable_rel(base_root, rel_path)
                 if cand.exists():
                     item["abs_path"] = str(cand)
 
