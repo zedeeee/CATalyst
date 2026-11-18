@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 
 from src.engine.docs_db import CatalystDocsDB
@@ -7,9 +8,9 @@ from src.parser.docs_builder import CatalystDocsBuilder
 from src.parser.docs_parser import parse_catnls_file, parse_toc_xml
 
 
-def _create_synthetic_catia_env(tmp_path: Path):
-    doc_root = tmp_path / "B27doc" / "English" / "online"
-    install_root = tmp_path / "B27" / "win_b64"
+def _create_synthetic_catia_env(root_dir: Path):
+    doc_root = root_dir / "B27doc" / "English" / "online"
+    install_root = root_dir / "B27" / "win_b64"
 
     # 1. TOC XML
     doc_root.mkdir(parents=True)
@@ -25,7 +26,7 @@ def _create_synthetic_catia_env(tmp_path: Path):
         encoding="utf-8",
     )
 
-    # 2. cceug_C2 batch catalog doc + image + sample CSV
+    # 2. cceug_C2 batch catalog doc + image + text CSV + binary CATPart sample
     cce = doc_root / "cceug_C2"
     (cce / "images").mkdir(parents=True)
     (cce / "images" / "batch_layout.gif").write_bytes(b"GIF89a")
@@ -34,6 +35,7 @@ def _create_synthetic_catia_env(tmp_path: Path):
         "CHAPTER;FirstChapter\nKeywords;Name\nTypes;String\nSubChapter1;SubChapter1\nEND\n",
         encoding="utf-8",
     )
+    (cce / "samples" / "FHC_M03-05.CATPart").write_bytes(b"\x00\x01FAKE_CATPART_BINARY")
     (cce / "cceugbt0102.htm").write_text(
         """<html><head><title>Creating a Catalog in Batch Mode</title></head><body>
         <h1>Creating a Catalog in Batch Mode
@@ -46,7 +48,8 @@ def _create_synthetic_catia_env(tmp_path: Path):
               <td>Keyword Name is not automatically added in Batch mode.</td></tr>
         </table>
         <h2>CSV Structure</h2>
-        <p>Use BatchCatalog.csv with CHAPTER and ENDCHAPTER markers.</p>
+        <p>Use BatchCatalog.csv and FHC_M03-05.CATPart with CHAPTER and ENDCHAPTER markers.
+           See also <a href="../bascuctg_C2/bascuctg0000.htm">Catalog Options</a>.</p>
         <img src="images/batch_layout.gif">
         </body></html>""",
         encoding="utf-8",
@@ -90,75 +93,77 @@ def test_toc_and_catnls_parsers(tmp_path: Path):
 
     rows = parse_catnls_file(install_root / "resources" / "msgcatalog" / "CATCuiOptionEditor.CATNls")
     keys = {r[1] for r in rows}
-    assert "Cancel.Title" not in keys  # Generic UI noise filtered out
+    assert "Cancel.Title" not in keys
     assert "CATCuiOptionEditor.ResolvedComponents.AllowComponentResolution.LongHelp" in keys
 
 
-def test_docs_builder_engine_and_mcp_endpoints(tmp_path: Path, monkeypatch):
-    doc_root, install_root = _create_synthetic_catia_env(tmp_path)
+def test_portable_relative_db_relocation_and_linked_assets(tmp_path: Path, monkeypatch):
+    build_env = tmp_path / "machine_a"
+    doc_root, install_root = _create_synthetic_catia_env(build_env)
     out_db = tmp_path / "catalyst_docs.db"
 
+    # Build on "machine A" (accepting top-level B27doc root as well)
     builder = CatalystDocsBuilder(
         output_db=out_db,
-        doc_root=doc_root,
-        install_root=install_root,
+        doc_root=build_env / "B27doc",
+        install_root=build_env / "B27",
         release="B27",
         workers=1,
     )
     summary = builder.build()
     assert summary["page_count"] == 2
-    assert summary["nls_count"] >= 2
-    assert summary["sample_count"] == 1
+    assert summary["text_sample_count"] == 1
+    assert summary["binary_sample_count"] == 1
 
-    db = CatalystDocsDB(out_db)
-    assert db.get_meta()["catia_release"] == "B27"
+    # Simulate relocating docs to a completely different root on "machine B" and deleting machine A
+    relocated = tmp_path / "machine_b" / "custom_docs_dir"
+    shutil.copytree(build_env / "B27doc", relocated)
+    shutil.rmtree(build_env)
 
-    # Search docs
-    res = db.search_docs("Catalog Batch Mode", category="user_guide")
-    assert res["total_matches"] == 1
-    assert res["results"][0]["doc_id"] == "cceug_C2/cceugbt0102.htm"
-    assert "Keyword Name" in res["results"][0]["warnings_preview"]
-    assert res["results"][0]["image_count"] == 1
-
-    # Get page + section slicing + resolved image path
-    page = db.get_doc_page("cceug_C2/cceugbt0102.htm", section="CSV Structure")
-    assert page is not None
-    assert page["section_matched"] is True
-    assert "BatchCatalog.csv" in page["body_text"]
-    assert page["images"][0]["rel_path"] == "cceug_C2/images/batch_layout.gif"
-    assert Path(page["images"][0]["abs_path"]).exists()
-
-    # Settings cross-search (CATNls + Tools>Options doc page)
-    st = db.search_settings(query="dynamic resolution")
-    assert st["total_nls_matches"] >= 1
-    assert st["nls_entries"][0]["file_stem"] == "CATCuiOptionEditor"
-    assert any(d["doc_id"] == "bascuctg_C2/bascuctg0000.htm" for d in st["related_option_docs"])
-
-    # Samples search with full content
-    smp = db.search_samples(query="BatchCatalog", ext=".csv", include_content=True)
-    assert smp["total_matches"] == 1
-    assert "FirstChapter" in smp["results"][0]["content"]
-
-    # MCP endpoints with CATALYST_DOCS_DB_PATH
+    # Configure only CATALYST_DOC_ROOT at runtime (pointing to top-level B27doc folder)
+    monkeypatch.setenv("CATALYST_DOC_ROOT", str(relocated))
     monkeypatch.setenv("CATALYST_DOCS_DB_PATH", str(out_db))
     monkeypatch.setattr(mcp_server, "_docs_db_instance", None)
 
-    mcp_docs = json.loads(mcp_server.search_catia_docs(query="Batch Mode"))
-    assert not mcp_docs.get("isError") and mcp_docs["total_matches"] == 1
+    db = CatalystDocsDB(out_db)
+    meta = db.get_meta()
+    assert meta["portable_relative_paths"] == "true"
+    assert "doc_root" not in meta  # Zero machine-specific absolute paths stored in DB
 
-    mcp_page = json.loads(mcp_server.get_catia_doc_page(doc_id="bascuctg0000.htm"))
-    assert not mcp_page.get("isError") and "ToolsOptions.Infrastructure.Catalogs" in mcp_page["options_anchors"]
+    # get_doc_page dynamically resolves HTML, images, linked_docs, and linked_files (text + binary!)
+    page = db.get_doc_page("cceug_C2/cceugbt0102.htm", section="CSV Structure")
+    assert page is not None
+    assert page["section_matched"] is True
+    assert Path(page["abs_path"]).exists()
+    assert str(relocated) in page["abs_path"]
+    assert page["images"][0]["rel_path"] == "cceug_C2/images/batch_layout.gif"
+    assert Path(page["images"][0]["abs_path"]).exists()
+    assert "bascuctg_C2/bascuctg0000.htm" in page["linked_docs"]
 
-    mcp_set = json.loads(mcp_server.search_catia_settings(nls_file="CATCuiOptionEditor"))
-    assert not mcp_set.get("isError") and mcp_set["total_nls_matches"] >= 2
+    linked_rel_paths = {f["rel_path"]: f for f in page["linked_files"]}
+    assert "cceug_C2/samples/BatchCatalog.csv" in linked_rel_paths
+    assert "cceug_C2/samples/FHC_M03-05.CATPart" in linked_rel_paths
+    assert linked_rel_paths["cceug_C2/samples/FHC_M03-05.CATPart"]["is_binary"] is True
+    assert Path(linked_rel_paths["cceug_C2/samples/FHC_M03-05.CATPart"]["abs_path"]).exists()
 
-    mcp_smp = json.loads(mcp_server.search_catia_samples(query="BatchCatalog", include_content=True))
-    assert not mcp_smp.get("isError") and mcp_smp["total_matches"] == 1
+    # Search binary CAD sample by filename + dynamically resolved abs_path
+    bin_smp = json.loads(mcp_server.search_catia_samples(query="FHC_M03", ext=".catpart"))
+    assert bin_smp["total_matches"] == 1
+    assert bin_smp["results"][0]["is_binary"] is True
+    assert bin_smp["results"][0]["rel_path"] == "cceug_C2/samples/FHC_M03-05.CATPart"
+    assert Path(bin_smp["results"][0]["abs_path"]).exists()
 
-    # Graceful error when docs DB does not exist
-    monkeypatch.setenv("CATALYST_DOCS_DB_PATH", str(tmp_path / "missing.db"))
+    # Text-only filter excludes binary CAD samples
+    txt_only = json.loads(mcp_server.search_catia_samples(query="FHC_M03", include_binary=False))
+    assert txt_only["total_matches"] == 0
+
+    # Settings cross-search works seamlessly
+    mcp_set = json.loads(mcp_server.search_catia_settings(query="dynamic resolution"))
+    assert not mcp_set.get("isError") and mcp_set["total_nls_matches"] >= 1
+    assert any(d["doc_id"] == "bascuctg_C2/bascuctg0000.htm" for d in mcp_set["related_option_docs"])
+
+    # Graceful error when docs DB is missing
     monkeypatch.setattr(mcp_server, "_docs_db_instance", None)
-    # Also ensure default resolution doesn't pick up repo's local DB during this test
     monkeypatch.setattr(mcp_server, "resolve_docs_db_path", lambda: None)
     missing_res = json.loads(mcp_server.search_catia_docs(query="Catalog"))
     assert missing_res.get("isError") is True

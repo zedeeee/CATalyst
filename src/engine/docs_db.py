@@ -1,7 +1,7 @@
 """
 Offline Documentation Extension Engine for CATalyst (catalyst_docs.db).
-Provides fast BM25 full-text search across CATIA V5 User's Guide HTML pages,
-CATNls UI/Settings mappings, and official plain-text samples with version watermarking.
+Reads portable relative paths from catalyst_docs.db and resolves machine-local absolute paths
+dynamically at runtime via CATALYST_DOC_ROOT / CATALYST_INSTALL_ROOT (configured in MCP env).
 """
 
 from __future__ import annotations
@@ -14,6 +14,12 @@ import sqlite3
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+
+from src.parser.docs_parser import (
+    BINARY_SAMPLE_EXTS,
+    normalize_doc_root,
+    normalize_install_root,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +65,62 @@ def resolve_docs_db_path(db_path: Optional[Union[str, Path]] = None) -> Optional
     return None
 
 
+def resolve_runtime_doc_root(meta: Dict[str, str]) -> Optional[Path]:
+    """
+    Resolve runtime doc root directory dynamically:
+    1. CATALYST_DOC_ROOT env var (recommended in MCP config; accepts Bxxdoc or Bxxdoc/English/online)
+    2. Legacy docs_meta['doc_root'] if present
+    3. Standard Dassault install path matching docs_meta['catia_release'] (e.g. B27doc/English/online)
+    """
+    env_val = os.environ.get("CATALYST_DOC_ROOT", "").strip()
+    if env_val:
+        norm = normalize_doc_root(Path(env_val))
+        if norm:
+            return norm
+
+    legacy = (meta.get("doc_root") or "").strip()
+    if legacy:
+        norm = normalize_doc_root(Path(legacy))
+        if norm:
+            return norm
+
+    release = (meta.get("catia_release") or "").strip()
+    if release and release.lower() != "unknown":
+        default_dir = Path(r"C:\Program Files\Dassault Systemes") / f"{release}doc"
+        norm = normalize_doc_root(default_dir)
+        if norm:
+            return norm
+    return None
+
+
+def resolve_runtime_install_root(meta: Dict[str, str]) -> Optional[Path]:
+    """
+    Resolve runtime CATIA win_b64 install root dynamically:
+    1. CATALYST_INSTALL_ROOT env var (accepts Bxx or Bxx/win_b64)
+    2. Legacy docs_meta['install_root'] if present
+    3. Standard Dassault install path matching docs_meta['catia_release'] (e.g. B27/win_b64)
+    """
+    env_val = os.environ.get("CATALYST_INSTALL_ROOT", "").strip()
+    if env_val:
+        norm = normalize_install_root(Path(env_val))
+        if norm:
+            return norm
+
+    legacy = (meta.get("install_root") or "").strip()
+    if legacy:
+        norm = normalize_install_root(Path(legacy))
+        if norm:
+            return norm
+
+    release = (meta.get("catia_release") or "").strip()
+    if release and release.lower() != "unknown":
+        default_dir = Path(r"C:\Program Files\Dassault Systemes") / release
+        norm = normalize_install_root(default_dir)
+        if norm:
+            return norm
+    return None
+
+
 def _split_camel_case(text: str) -> str:
     """Split CamelCase identifiers (e.g. FavoriteCatalog -> Favorite Catalog) for FTS fallback."""
     s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
@@ -88,14 +150,14 @@ def _format_fts_tokens(query: str, joiner: str = " AND ") -> str:
 
 
 class CatalystDocsDB:
-    """Thread-safe read-only query engine over local catalyst_docs.db."""
+    """Thread-safe read-only query engine over portable catalyst_docs.db."""
 
     def __init__(self, db_path: Optional[Union[str, Path]] = None) -> None:
         resolved = resolve_docs_db_path(db_path)
         if resolved is None:
             raise FileNotFoundError(
                 "CATalyst offline docs database (catalyst_docs.db) not found. "
-                "Build it locally with: `uv run python build_docs.py --doc-root <Bxxdoc/English/online> --install-root <Bxx/win_b64>`."
+                "Build it locally with: `uv run python build_docs.py --doc-root <Bxxdoc> --install-root <Bxx>`."
             )
         self.db_path = resolved
         self._local = threading.local()
@@ -113,6 +175,11 @@ class CatalystDocsDB:
         cur = self.conn.cursor()
         cur.execute("SELECT key, value FROM docs_meta")
         return {row["key"]: row["value"] for row in cur.fetchall()}
+
+    def _has_column(self, table: str, column: str) -> bool:
+        cur = self.conn.cursor()
+        cur.execute(f"PRAGMA table_info({table})")
+        return any(row["name"] == column for row in cur.fetchall())
 
     def search_docs(
         self,
@@ -137,6 +204,7 @@ class CatalystDocsDB:
         cat_norm = (category or "all").strip().lower()
         mod_norm = (module or "").strip()
         sol_norm = (solution or "").strip()
+        has_links = self._has_column("doc_pages", "linked_files_json")
 
         def _exec(match_expr: str) -> List[sqlite3.Row]:
             where_parts = ["doc_pages_fts MATCH ?"]
@@ -152,6 +220,7 @@ class CatalystDocsDB:
                 params.append(f"%{sol_norm}%")
 
             params.append(clamped)
+            extra_cols = ", p.linked_files_json" if has_links else ""
             sql = f"""
                 SELECT
                     p.doc_id,
@@ -163,7 +232,7 @@ class CatalystDocsDB:
                     p.options_anchors,
                     p.summary,
                     p.warnings,
-                    p.images_json,
+                    p.images_json{extra_cols},
                     snippet(doc_pages_fts, 5, '[', ']', '...', 24) AS snippet,
                     bm25(doc_pages_fts, 10.0, 8.0, 8.0, 5.0, 4.0, 1.0) AS score
                 FROM doc_pages_fts
@@ -193,6 +262,7 @@ class CatalystDocsDB:
         results: List[Dict[str, Any]] = []
         for r in rows:
             imgs = json.loads(r["images_json"] or "[]")
+            lfiles = json.loads(r["linked_files_json"] or "[]") if has_links else []
             warn_preview = (r["warnings"] or "").strip()
             if len(warn_preview) > 220:
                 warn_preview = warn_preview[:220] + "..."
@@ -209,6 +279,7 @@ class CatalystDocsDB:
                     "warnings_preview": warn_preview,
                     "snippet": r["snippet"] or "",
                     "image_count": len(imgs),
+                    "linked_file_count": len(lfiles),
                 }
             )
 
@@ -229,24 +300,26 @@ class CatalystDocsDB:
         include_images: bool = True,
         max_chars: int = 12000,
     ) -> Optional[Dict[str, Any]]:
-        """Retrieve a single official documentation page with optional section slicing and local image paths."""
+        """
+        Retrieve a single official documentation page.
+        Resolves relative paths of HTML, images, and linked sample files against runtime CATALYST_DOC_ROOT.
+        """
         meta = self.get_meta()
         norm_id = (doc_id or "").strip().replace("\\", "/")
         cur = self.conn.cursor()
         cur.execute("SELECT * FROM doc_pages WHERE doc_id = ?", (norm_id,))
         row = cur.fetchone()
         if not row:
-            # Convenience fallback: match by filename if user passed only e.g. 'cceugbt0102.htm'
             cur.execute("SELECT * FROM doc_pages WHERE LOWER(doc_id) LIKE LOWER(?) LIMIT 1", (f"%/{norm_id}",))
             row = cur.fetchone()
         if not row:
             return None
 
-        body = row["body_text"] or ""
+        row_dict = dict(row)
+        body = row_dict.get("body_text") or ""
         sec_filter = (section or "").strip().lower()
         section_matched = False
         if sec_filter:
-            # Slice starting from the first heading containing `section`
             lines = body.splitlines()
             start_idx = None
             start_level = 6
@@ -272,38 +345,59 @@ class CatalystDocsDB:
             body = f"{body[:max_chars]}\n\n... [truncated {omitted} chars; pass section=... or larger max_chars]"
             truncated = True
 
+        doc_root_path = resolve_runtime_doc_root(meta)
+
+        def _attach_abs(rel_p: str) -> Dict[str, Any]:
+            entry: Dict[str, Any] = {"rel_path": rel_p}
+            if doc_root_path:
+                cand = doc_root_path / rel_p
+                if cand.exists():
+                    entry["abs_path"] = str(cand)
+            return entry
+
         result: Dict[str, Any] = {
             "catia_release": meta.get("catia_release", "unknown"),
-            "doc_id": row["doc_id"],
-            "title": row["title"],
-            "module": row["module"],
-            "solution": row["solution"],
-            "product_name": row["product_name"],
-            "category": row["category"],
-            "ix_keywords": row["ix_keywords"] or "",
-            "options_anchors": row["options_anchors"] or "",
-            "headings": row["headings"] or "",
-            "summary": row["summary"] or "",
-            "warnings": row["warnings"] or "",
+            "doc_root_resolved": str(doc_root_path) if doc_root_path else None,
+            "doc_id": row_dict["doc_id"],
+            "title": row_dict["title"],
+            "module": row_dict["module"],
+            "solution": row_dict["solution"],
+            "product_name": row_dict["product_name"],
+            "category": row_dict["category"],
+            "ix_keywords": row_dict.get("ix_keywords") or "",
+            "options_anchors": row_dict.get("options_anchors") or "",
+            "headings": row_dict.get("headings") or "",
+            "summary": row_dict.get("summary") or "",
+            "warnings": row_dict.get("warnings") or "",
             "section_filter": section or None,
             "section_matched": section_matched if sec_filter else None,
             "truncated": truncated,
             "body_text": body,
         }
 
+        if doc_root_path:
+            page_abs = doc_root_path / row_dict["doc_id"]
+            if page_abs.exists():
+                result["abs_path"] = str(page_abs)
+
         if include_images:
-            raw_imgs = json.loads(row["images_json"] or "[]")
-            doc_root_str = meta.get("doc_root", "")
-            doc_root_path = Path(doc_root_str) if doc_root_str else None
-            resolved_imgs: List[Dict[str, str]] = []
-            for rel_img in raw_imgs:
-                entry: Dict[str, str] = {"rel_path": rel_img}
-                if doc_root_path:
-                    abs_img = doc_root_path / rel_img
-                    if abs_img.exists():
-                        entry["abs_path"] = str(abs_img)
-                resolved_imgs.append(entry)
-            result["images"] = resolved_imgs
+            raw_imgs = json.loads(row_dict.get("images_json") or "[]")
+            result["images"] = [_attach_abs(rel_img) for rel_img in raw_imgs]
+
+        raw_linked_docs = json.loads(row_dict.get("linked_docs_json") or "[]")
+        if raw_linked_docs:
+            result["linked_docs"] = raw_linked_docs
+
+        raw_linked_files = json.loads(row_dict.get("linked_files_json") or "[]")
+        if raw_linked_files:
+            resolved_files = []
+            for rf in raw_linked_files:
+                item = _attach_abs(rf)
+                ext = Path(rf).suffix.lower()
+                item["ext"] = ext
+                item["is_binary"] = ext in BINARY_SAMPLE_EXTS
+                resolved_files.append(item)
+            result["linked_files"] = resolved_files
 
         return result
 
@@ -314,9 +408,7 @@ class CatalystDocsDB:
         options_only: bool = True,
         limit: int = 15,
     ) -> Dict[str, Any]:
-        """
-        Search CATNls UI option labels/keys and cross-link matching Tools>Options doc pages.
-        """
+        """Search CATNls UI option labels/keys and cross-link matching Tools>Options doc pages."""
         meta = self.get_meta()
         clamped = max(1, min(limit, 50))
         q = (query or "").strip()
@@ -362,7 +454,6 @@ class CatalystDocsDB:
                 cur.execute(sql, params)
                 nls_rows = cur.fetchall()
 
-                # Relax options_only or split CamelCase if strict query returned 0
                 if not nls_rows:
                     camel_q = _split_camel_case(q)
                     if camel_q != q:
@@ -388,7 +479,6 @@ class CatalystDocsDB:
                     )
                     nls_rows = cur.fetchall()
 
-        # Cross-link related Tools>Options official doc pages
         related_docs: List[Dict[str, Any]] = []
         doc_query = q or nf
         if doc_query:
@@ -432,10 +522,14 @@ class CatalystDocsDB:
         ext: str = "",
         module: str = "",
         include_content: bool = False,
+        include_binary: bool = True,
         max_chars: int = 6000,
         limit: int = 10,
     ) -> Dict[str, Any]:
-        """Search official plain-text samples (.csv, .CATScript, .txt, .xml)."""
+        """
+        Search official CATIA V5 sample files (both text and binary CAD models).
+        Returns portable rel_path plus dynamically resolved abs_path from CATALYST_DOC_ROOT / CATALYST_INSTALL_ROOT.
+        """
         meta = self.get_meta()
         clamped = max(1, min(limit, 30))
         q = (query or "").strip()
@@ -443,6 +537,7 @@ class CatalystDocsDB:
         if ext_norm and not ext_norm.startswith("."):
             ext_norm = f".{ext_norm}"
         mod_norm = (module or "").strip()
+        has_is_binary = self._has_column("doc_samples", "is_binary")
 
         cur = self.conn.cursor()
         where: List[str] = []
@@ -466,6 +561,8 @@ class CatalystDocsDB:
         if mod_norm:
             where.append("LOWER(s.module) LIKE LOWER(?)")
             params.append(f"%{mod_norm}%")
+        if has_is_binary and not include_binary:
+            where.append("s.is_binary = 0")
 
         params.append(clamped)
         if q:
@@ -484,29 +581,46 @@ class CatalystDocsDB:
         cur.execute(sql, params)
         rows = cur.fetchall()
 
+        doc_root_path = resolve_runtime_doc_root(meta)
+        install_root_path = resolve_runtime_install_root(meta)
+
         results: List[Dict[str, Any]] = []
         for r in rows:
+            rd = dict(r)
+            is_bin = bool(rd.get("is_binary", 0))
+            rel_path = rd["rel_path"]
             item: Dict[str, Any] = {
-                "sample_id": r["sample_id"],
-                "source": r["source"],
-                "module": r["module"],
-                "filename": r["filename"],
-                "ext": r["ext"],
-                "rel_path": r["rel_path"],
-                "size_bytes": r["size_bytes"],
+                "sample_id": rd["sample_id"],
+                "source": rd["source"],
+                "module": rd["module"],
+                "filename": rd["filename"],
+                "ext": rd["ext"],
+                "rel_path": rel_path,
+                "size_bytes": rd["size_bytes"],
+                "is_binary": is_bin,
             }
-            if include_content:
-                content = r["content"] or ""
-                if max_chars > 0 and len(content) > max_chars:
-                    content = f"{content[:max_chars]}\n... [truncated {len(content) - max_chars} chars]"
-                item["content"] = content
-            else:
-                preview = (r["content"] or "").splitlines()[:5]
-                item["preview"] = "\n".join(preview)[:300]
+
+            # Dynamically resolve local absolute path from configured MCP roots
+            base_root = doc_root_path if rd["source"] == "doc_samples" else install_root_path
+            if base_root:
+                cand = base_root / rel_path
+                if cand.exists():
+                    item["abs_path"] = str(cand)
+
+            if not is_bin:
+                if include_content:
+                    content = rd.get("content") or ""
+                    if max_chars > 0 and len(content) > max_chars:
+                        content = f"{content[:max_chars]}\n... [truncated {len(content) - max_chars} chars]"
+                    item["content"] = content
+                else:
+                    preview = (rd.get("content") or "").splitlines()[:5]
+                    item["preview"] = "\n".join(preview)[:300]
             results.append(item)
 
         return {
             "catia_release": meta.get("catia_release", "unknown"),
+            "doc_root_resolved": str(doc_root_path) if doc_root_path else None,
             "query": q,
             "total_matches": len(results),
             "results": results,

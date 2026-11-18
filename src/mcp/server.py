@@ -557,19 +557,22 @@ def search_catia_samples(
     ext: str = "",
     module: str = "",
     include_content: bool = False,
+    include_binary: bool = True,
     max_chars: int = 6000,
     limit: int = 10,
 ) -> str:
     """
-    Search official CATIA V5 plain-text samples (.csv, .CATScript, .txt DesignTables, .xml)
-    from offline docs and startup directories.
+    Search official CATIA V5 sample files — both plain-text (.csv, .CATScript, .txt, .xml)
+    and binary CAD/Excel samples (.CATPart, .CATProduct, .catalog, .cgr, .xls).
+    Stores portable relative paths and resolves machine-local abs_path from CATALYST_DOC_ROOT / CATALYST_INSTALL_ROOT.
 
     Args:
-        query: Keywords matching filename, module, path, or sample content (e.g., 'BatchCatalog', 'ALL_FASTENERS')
-        ext: Optional extension filter (e.g., '.csv', '.catscript', '.txt')
-        module: Optional module directory filter (e.g., 'cceug_C2')
-        include_content: Return full sample text (up to max_chars) instead of a 5-line preview (default False)
-        max_chars: Max characters per sample when include_content=True (default 6000)
+        query: Keywords matching filename, module, path, or text sample content (e.g., 'BatchCatalog', 'PktRod', 'FHC_M03')
+        ext: Optional extension filter (e.g., '.csv', '.catscript', '.catpart', '.catalog')
+        module: Optional module directory filter (e.g., 'cceug_C2', 'cfyugpkt_C2')
+        include_content: Return full text content for non-binary samples (default False)
+        include_binary: Include binary CAD/Excel samples indexed by relative path (default True)
+        max_chars: Max characters per text sample when include_content=True (default 6000)
         limit: Max samples to return (default 10, max 30)
     """
     try:
@@ -581,6 +584,7 @@ def search_catia_samples(
             ext=ext,
             module=module,
             include_content=include_content,
+            include_binary=include_binary,
             max_chars=max_chars,
             limit=limit,
         )

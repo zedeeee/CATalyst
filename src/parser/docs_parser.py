@@ -1,7 +1,6 @@
 """
 Offline CATIA V5 Documentation, CATNls Message Catalog, and Official Samples Parser.
-Zero hardcoded personal paths or release versions. Designed for high-throughput
-multiprocessing extraction over Dassault Systemes Bxxdoc HTML trees.
+Stores strictly portable relative POSIX paths (zero machine-specific absolute paths in DB).
 """
 
 from __future__ import annotations
@@ -10,7 +9,8 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from urllib.parse import unquote
 
 from lxml import html as lxml_html
 
@@ -39,8 +39,29 @@ SKIP_IMG_MARKERS = (
 )
 
 TEXT_SAMPLE_EXTS = {".csv", ".catscript", ".txt", ".xml", ".vbs", ".catvbs", ".bas", ".cls"}
-STARTUP_SAMPLE_EXTS = {".csv", ".catscript", ".catvbs", ".vbs"}
-MAX_SAMPLE_BYTES = 256 * 1024
+BINARY_SAMPLE_EXTS = {
+    ".catpart",
+    ".catproduct",
+    ".catalog",
+    ".catdrawing",
+    ".catanalysis",
+    ".catprocess",
+    ".catshape",
+    ".catmaterial",
+    ".cgr",
+    ".model",
+    ".xls",
+    ".xlsx",
+    ".act",
+    ".wrl",
+    ".stp",
+    ".step",
+    ".igs",
+    ".iges",
+}
+ALL_DOC_SAMPLE_EXTS = TEXT_SAMPLE_EXTS | BINARY_SAMPLE_EXTS
+STARTUP_INDEX_EXTS = {".csv", ".catscript", ".catvbs", ".vbs", ".catalog"}
+MAX_TEXT_SAMPLE_BYTES = 256 * 1024
 
 _NOISE_NLS_VALUES = {
     "ok",
@@ -80,6 +101,36 @@ _OPTION_FILE_RE = re.compile(
 _NLS_KV_RE = re.compile(r'^\s*([A-Za-z0-9_.\-/]+)\s*=\s*"((?:[^"\\]|\\.)*)"\s*;?\s*$')
 _WS_RE = re.compile(r"[ \t\r\f\v]+")
 _MULTI_NL_RE = re.compile(r"\n{3,}")
+_MENTIONED_FILE_RE = re.compile(
+    r"\b([A-Za-z0-9_\-]+\.(?:csv|CATScript|CATVbs|CATPart|CATProduct|catalog|CATDrawing|CATAnalysis|CATProcess|txt|xml|xls|xlsx|cgr|model))\b",
+    re.I,
+)
+
+
+def normalize_doc_root(path: Optional[Path]) -> Optional[Path]:
+    """Allow passing either Bxxdoc, Bxxdoc/English, or Bxxdoc/English/online."""
+    if not path:
+        return None
+    p = Path(path)
+    if not p.exists():
+        return None
+    if (p / "English" / "online").is_dir():
+        return (p / "English" / "online").resolve()
+    if (p / "online").is_dir():
+        return (p / "online").resolve()
+    return p.resolve()
+
+
+def normalize_install_root(path: Optional[Path]) -> Optional[Path]:
+    """Allow passing either Bxx or Bxx/win_b64."""
+    if not path:
+        return None
+    p = Path(path)
+    if not p.exists():
+        return None
+    if (p / "win_b64").is_dir():
+        return (p / "win_b64").resolve()
+    return p.resolve()
 
 
 def detect_release_from_path(path: Optional[Path]) -> str:
@@ -141,12 +192,35 @@ def classify_module(module_dir: str, toc_map: Dict[str, Tuple[str, str]]) -> Opt
     return ("user_guide", solution or "User's Guide", product or module_dir)
 
 
+def build_module_sample_lookup(doc_root: Path) -> Dict[str, Dict[str, str]]:
+    """
+    Build lookup: module_name -> {filename_lower: rel_path_posix}
+    so HTML pages mentioning e.g. 'BatchCatalog.csv' or 'PktRod.CATPart' bind directly to exact relative paths.
+    """
+    lookup: Dict[str, Dict[str, str]] = {}
+    for root, _, files in os.walk(doc_root):
+        rp = Path(root)
+        rel_parts = rp.relative_to(doc_root).parts
+        if not rel_parts:
+            continue
+        if "samples" not in [p.lower() for p in rel_parts]:
+            continue
+        mod = rel_parts[0]
+        mod_map = lookup.setdefault(mod, {})
+        for fn in files:
+            ext = Path(fn).suffix.lower()
+            if ext not in ALL_DOC_SAMPLE_EXTS:
+                continue
+            rel_posix = (rp / fn).relative_to(doc_root).as_posix()
+            mod_map.setdefault(fn.lower(), rel_posix)
+    return lookup
+
+
 def _clean_inline(text: str) -> str:
     return _WS_RE.sub(" ", (text or "").replace("\xa0", " ")).strip()
 
 
 def _extract_table_row_text(img_el: Any) -> str:
-    """Given an icon <img> (e.g. atarget.gif / awarning.gif), extract the adjacent <td> text."""
     tr = img_el.getparent()
     while tr is not None and getattr(tr, "tag", "").lower() != "tr":
         tr = tr.getparent()
@@ -161,10 +235,8 @@ def _extract_table_row_text(img_el: Any) -> str:
 
 
 def _node_to_markdown(root_el: Any) -> str:
-    """Convert cleaned Dassault HTML body into compact Markdown-like plain text."""
     lines: List[str] = []
 
-    # Remove scripts, styles, and navigation footers
     for bad in root_el.xpath(".//script | .//style | .//noscript"):
         parent = bad.getparent()
         if parent is not None:
@@ -185,7 +257,6 @@ def _node_to_markdown(root_el: Any) -> str:
             if code_txt:
                 lines.append(f"\n```\n{code_txt}\n```\n")
         elif t == "li":
-            # Avoid duplicating nested <p> inside <li>
             txt = _clean_inline(" ".join(el.itertext()))
             if txt:
                 lines.append(f"- {txt}")
@@ -197,24 +268,19 @@ def _node_to_markdown(root_el: Any) -> str:
             if txt:
                 lines.append(txt)
         elif t == "td":
-            # Capture bare text inside table cells that have no block children
             if not el.xpath(".//p | .//li | .//h1 | .//h2 | .//h3 | .//h4 | .//pre | .//table"):
                 txt = _clean_inline(" ".join(el.itertext()))
                 if txt and len(txt) > 1:
                     lines.append(txt)
 
     if not lines:
-        raw = _clean_inline(root_el.text_content() or "")
-        return raw
+        return _clean_inline(root_el.text_content() or "")
 
-    # Deduplicate adjacent identical lines caused by nested legacy FrontPage tables
     deduped: List[str] = []
     prev = ""
     for ln in lines:
         s = ln.strip()
-        if not s:
-            continue
-        if s == prev:
+        if not s or s == prev:
             continue
         deduped.append(ln)
         prev = s
@@ -223,12 +289,31 @@ def _node_to_markdown(root_el: Any) -> str:
     return _MULTI_NL_RE.sub("\n\n", joined).strip()
 
 
-def parse_doc_html_task(args: Tuple[str, str, str, str, str, str]) -> Optional[Dict[str, Any]]:
+def _resolve_rel_href(rel_parent: Path, raw_href: str) -> Optional[str]:
+    href = unquote((raw_href or "").strip())
+    if not href or href.startswith("#"):
+        return None
+    low = href.lower()
+    if low.startswith(("http://", "https://", "mailto:", "javascript:", "ftp:")):
+        return None
+    # Strip anchor fragment and query string
+    href = href.split("#", 1)[0].split("?", 1)[0].strip()
+    if not href:
+        return None
+    norm = os.path.normpath(str(rel_parent / href)).replace("\\", "/")
+    if norm.startswith("..") or norm.startswith("/"):
+        return None
+    return norm
+
+
+def parse_doc_html_task(
+    args: Tuple[str, str, str, str, str, str, Dict[str, str]]
+) -> Optional[Dict[str, Any]]:
     """
-    Top-level picklable worker function for ProcessPoolExecutor.
-    args = (abs_path_str, rel_path_posix, module, category, solution, product_name)
+    Top-level picklable worker for ProcessPoolExecutor.
+    args = (abs_path_str, rel_path_posix, module, category, solution, product_name, mod_sample_map)
     """
-    abs_path_str, rel_path, module, category, solution, product_name = args
+    abs_path_str, rel_path, module, category, solution, product_name, mod_sample_map = args
     fp = Path(abs_path_str)
     try:
         raw_bytes = fp.read_bytes()
@@ -237,7 +322,6 @@ def parse_doc_html_task(args: Tuple[str, str, str, str, str, str]) -> Optional[D
     if not raw_bytes:
         return None
 
-    # Decode ISO-8859-1 / UTF-8 safely (Dassault Bxxdoc HTML is mostly iso-8859-1 / utf-8)
     try:
         html_text = raw_bytes.decode("utf-8")
     except UnicodeDecodeError:
@@ -248,7 +332,6 @@ def parse_doc_html_task(args: Tuple[str, str, str, str, str, str]) -> Optional[D
     except Exception:
         return None
 
-    # Skip frameset wrapper pages with no real body content
     if doc.xpath(".//frameset"):
         return None
 
@@ -261,14 +344,12 @@ def parse_doc_html_task(args: Tuple[str, str, str, str, str, str]) -> Optional[D
     if not title:
         title = fp.stem
 
-    # Headings
     headings_list: List[str] = []
     for h in doc.xpath(".//h1 | .//h2 | .//h3"):
         ht = _clean_inline(" ".join(h.itertext()))
         if ht and ht not in headings_list:
             headings_list.append(ht)
 
-    # Official <a name="ix-..."> index keywords & <a name="ToolsOptions..."> anchors
     ix_keywords: List[str] = []
     options_anchors: List[str] = []
     for a in doc.xpath(".//a[@name]"):
@@ -283,11 +364,30 @@ def parse_doc_html_task(args: Tuple[str, str, str, str, str, str]) -> Optional[D
             if aname not in options_anchors:
                 options_anchors.append(aname)
 
-    # Extract target summary, warnings, and real content images
+    rel_parent = Path(rel_path).parent
+
+    # Extract hyperlinks to sibling docs and non-HTML linked asset/sample files
+    linked_docs: List[str] = []
+    linked_files: List[str] = []
+    linked_files_seen: Set[str] = set()
+
+    for a in doc.xpath(".//a[@href]"):
+        resolved = _resolve_rel_href(rel_parent, a.attrib.get("href") or "")
+        if not resolved or resolved == rel_path:
+            continue
+        res_low = resolved.lower()
+        if res_low.endswith((".htm", ".html")):
+            if not res_low.endswith("toc.htm") and resolved not in linked_docs:
+                linked_docs.append(resolved)
+        else:
+            ext = Path(resolved).suffix.lower()
+            if ext in ALL_DOC_SAMPLE_EXTS and resolved not in linked_files_seen:
+                linked_files_seen.add(resolved)
+                linked_files.append(resolved)
+
     summaries: List[str] = []
     warnings: List[str] = []
     images: List[str] = []
-    rel_parent = Path(rel_path).parent
 
     for img in doc.xpath(".//img[@src]"):
         src = (img.attrib.get("src") or "").strip().replace("\\", "/")
@@ -306,7 +406,6 @@ def parse_doc_html_task(args: Tuple[str, str, str, str, str, str]) -> Optional[D
             continue
         if any(m in src_low for m in SKIP_IMG_MARKERS):
             continue
-        # Resolve relative to doc_root in posix format
         norm_img = os.path.normpath(str(rel_parent / src)).replace("\\", "/")
         if not norm_img.startswith("..") and norm_img not in images:
             images.append(norm_img)
@@ -317,7 +416,15 @@ def parse_doc_html_task(args: Tuple[str, str, str, str, str, str]) -> Optional[D
     if not body_text or len(body_text) < 20:
         return None
 
-    # Promote Options category if page declares ToolsOptions anchors
+    # Resolve sample filenames explicitly mentioned in prose against this module's samples/
+    if mod_sample_map:
+        for m in _MENTIONED_FILE_RE.finditer(body_text):
+            fname_low = m.group(1).lower()
+            matched_rel = mod_sample_map.get(fname_low)
+            if matched_rel and matched_rel not in linked_files_seen:
+                linked_files_seen.add(matched_rel)
+                linked_files.append(matched_rel)
+
     final_category = "options" if options_anchors else category
 
     return {
@@ -334,17 +441,20 @@ def parse_doc_html_task(args: Tuple[str, str, str, str, str, str]) -> Optional[D
         "warnings": "\n".join(warnings[:6]),
         "body_text": body_text,
         "images": images[:20],
+        "linked_docs": linked_docs[:25],
+        "linked_files": linked_files[:25],
     }
 
 
 def iter_doc_html_tasks(
     doc_root: Path,
     toc_map: Dict[str, Tuple[str, str]],
+    sample_lookup: Dict[str, Dict[str, str]],
     only_modules: Optional[Iterable[str]] = None,
-) -> List[Tuple[str, str, str, str, str, str]]:
+) -> List[Tuple[str, str, str, str, str, str, Dict[str, str]]]:
     """Collect candidate HTML files across doc_root, skipping navigation frames and assets."""
     module_filter = {m.strip().lower() for m in (only_modules or []) if m.strip()}
-    tasks: List[Tuple[str, str, str, str, str, str]] = []
+    tasks: List[Tuple[str, str, str, str, str, str, Dict[str, str]]] = []
 
     for child in sorted(doc_root.iterdir(), key=lambda p: p.name):
         if not child.is_dir():
@@ -356,9 +466,9 @@ def iter_doc_html_tasks(
         if cls is None:
             continue
         category, solution, product_name = cls
+        mod_samples = sample_lookup.get(mod, {})
 
         for root, dirs, files in os.walk(child):
-            # Prune non-doc subdirectories in-place
             dirs[:] = [
                 d
                 for d in dirs
@@ -373,15 +483,12 @@ def iter_doc_html_tasks(
                     continue
                 fp = rp / fn
                 rel_posix = fp.relative_to(doc_root).as_posix()
-                tasks.append((str(fp), rel_posix, mod, category, solution, product_name))
+                tasks.append((str(fp), rel_posix, mod, category, solution, product_name, mod_samples))
     return tasks
 
 
 def parse_catnls_file(fp: Path) -> List[Tuple[str, str, str, int]]:
-    """
-    Parse a single .CATNls file into rows: (file_stem, nls_key, text, is_option_file).
-    Handles UTF-8/cp1252/GBK encodings and filters low-signal generic UI button noise.
-    """
+    """Parse a single .CATNls file into rows: (file_stem, nls_key, text, is_option_file)."""
     try:
         raw = fp.read_bytes()
     except OSError:
@@ -416,7 +523,6 @@ def parse_catnls_file(fp: Path) -> List[Tuple[str, str, str, int]]:
             continue
         if val.lower() in _NOISE_NLS_VALUES:
             continue
-        # Promote option flag if key exposes LongHelp/ShortHelp/ToolsOptions semantics
         row_opt = 1 if (is_opt or ".LongHelp" in key or ".ShortHelp" in key or "Option" in key) else 0
         rows.append((stem, key, val, row_opt))
 
@@ -438,12 +544,17 @@ def _decode_text_file(fp: Path) -> Optional[str]:
     return raw.decode("utf-8", errors="replace")
 
 
-def collect_text_samples(
+def collect_samples(
     doc_root: Optional[Path] = None,
     install_root: Optional[Path] = None,
     only_modules: Optional[Iterable[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Collect official plain-text samples (.csv, .CATScript, .txt, .xml) from doc_root/samples and startup."""
+    """
+    Collect all official sample files with portable relative POSIX paths:
+    - Text samples (.csv, .CATScript, .txt, .xml, .vbs): indexed with full text content (is_binary=0)
+    - Binary CAD/Excel samples (.CATPart, .CATProduct, .catalog, .cgr, .xls, etc.): indexed by
+      relative path & metadata only (is_binary=1, content=''), enabling zero-bloat lookup & runtime path resolution.
+    """
     module_filter = {m.strip().lower() for m in (only_modules or []) if m.strip()}
     samples: List[Dict[str, Any]] = []
 
@@ -461,18 +572,24 @@ def collect_text_samples(
             for fn in files:
                 fp = rp / fn
                 ext = fp.suffix.lower()
-                if ext not in TEXT_SAMPLE_EXTS:
+                if ext not in ALL_DOC_SAMPLE_EXTS:
                     continue
                 try:
                     sz = fp.stat().st_size
                 except OSError:
                     continue
-                if sz == 0 or sz > MAX_SAMPLE_BYTES:
+                if sz == 0:
                     continue
-                text = _decode_text_file(fp)
-                if not text or not text.strip():
-                    continue
+
                 rel_posix = fp.relative_to(doc_root).as_posix()
+                if ext in TEXT_SAMPLE_EXTS and sz <= MAX_TEXT_SAMPLE_BYTES:
+                    text = _decode_text_file(fp)
+                    is_bin = 0 if (text and text.strip()) else 1
+                    content = text if is_bin == 0 else ""
+                else:
+                    is_bin = 1
+                    content = ""
+
                 samples.append(
                     {
                         "sample_id": f"doc:{rel_posix}",
@@ -482,7 +599,8 @@ def collect_text_samples(
                         "ext": ext,
                         "rel_path": rel_posix,
                         "size_bytes": sz,
-                        "content": text,
+                        "is_binary": is_bin,
+                        "content": content,
                     }
                 )
 
@@ -494,19 +612,23 @@ def collect_text_samples(
                 for fn in files:
                     fp = rp / fn
                     ext = fp.suffix.lower()
-                    if ext not in STARTUP_SAMPLE_EXTS:
+                    if ext not in STARTUP_INDEX_EXTS:
                         continue
                     try:
                         sz = fp.stat().st_size
                     except OSError:
                         continue
-                    if sz == 0 or sz > MAX_SAMPLE_BYTES:
+                    if sz == 0:
                         continue
-                    text = _decode_text_file(fp)
-                    if not text or not text.strip():
-                        continue
-                    rel_posix = fp.relative_to(startup_dir).as_posix()
-                    top_mod = rel_posix.split("/", 1)[0]
+                    rel_posix = f"startup/{fp.relative_to(startup_dir).as_posix()}"
+                    top_mod = fp.relative_to(startup_dir).parts[0] if fp.relative_to(startup_dir).parts else "startup"
+                    if ext in TEXT_SAMPLE_EXTS and sz <= MAX_TEXT_SAMPLE_BYTES:
+                        text = _decode_text_file(fp)
+                        is_bin = 0 if (text and text.strip()) else 1
+                        content = text if is_bin == 0 else ""
+                    else:
+                        is_bin = 1
+                        content = ""
                     samples.append(
                         {
                             "sample_id": f"startup:{rel_posix}",
@@ -516,7 +638,8 @@ def collect_text_samples(
                             "ext": ext,
                             "rel_path": rel_posix,
                             "size_bytes": sz,
-                            "content": text,
+                            "is_binary": is_bin,
+                            "content": content,
                         }
                     )
 

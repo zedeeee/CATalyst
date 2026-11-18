@@ -161,11 +161,12 @@ def main():
     settings_parser.add_argument("--all", dest="all_entries", action="store_true", help="Do not restrict to option/LongHelp files")
     settings_parser.add_argument("--limit", "-l", type=int, default=15)
 
-    samples_parser = subparsers.add_parser("samples", help="Search official CATIA V5 plain-text samples")
+    samples_parser = subparsers.add_parser("samples", help="Search official CATIA V5 samples (text + binary CAD models)")
     samples_parser.add_argument("query", type=str, nargs="?", default="", help="Filename or content keywords")
-    samples_parser.add_argument("--ext", type=str, default="", help="Extension filter (e.g., .csv, .catscript)")
+    samples_parser.add_argument("--ext", type=str, default="", help="Extension filter (e.g., .csv, .catpart)")
     samples_parser.add_argument("--module", "-m", type=str, default="", help="Module filter")
-    samples_parser.add_argument("--content", action="store_true", help="Print full sample content")
+    samples_parser.add_argument("--content", action="store_true", help="Print full text sample content")
+    samples_parser.add_argument("--text-only", action="store_true", help="Exclude binary CAD/Excel samples")
     samples_parser.add_argument("--limit", "-l", type=int, default=10)
 
     args = parser.parse_args()
@@ -197,7 +198,14 @@ def main():
             ))
         elif args.command == "samples":
             print(json.dumps(
-                docs_db.search_samples(args.query, ext=args.ext, module=args.module, include_content=args.content, limit=args.limit),
+                docs_db.search_samples(
+                    args.query,
+                    ext=args.ext,
+                    module=args.module,
+                    include_content=args.content,
+                    include_binary=not args.text_only,
+                    limit=args.limit,
+                ),
                 indent=2, ensure_ascii=False
             ))
         return
