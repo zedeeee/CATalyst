@@ -143,7 +143,72 @@ def main():
     info_parser = subparsers.add_parser("info", help="Get diagnostic report of running CATIA instance")
     info_parser.add_argument("--clsid", type=str, default=None, help="Custom CLSID for ROT bridge connection")
 
+    docs_parser = subparsers.add_parser("docs", help="Search offline CATIA V5 User's Guide and Options docs")
+    docs_parser.add_argument("query", type=str, help="Search keywords")
+    docs_parser.add_argument("--category", "-c", choices=["all", "user_guide", "options", "automation_doc"], default="all")
+    docs_parser.add_argument("--module", "-m", type=str, default="", help="Module filter (e.g., cceug_C2)")
+    docs_parser.add_argument("--solution", "-s", type=str, default="", help="Solution filter")
+    docs_parser.add_argument("--limit", "-l", type=int, default=10)
+
+    doc_page_parser = subparsers.add_parser("doc-page", help="Read a specific offline documentation page")
+    doc_page_parser.add_argument("doc_id", type=str, help="Doc ID (e.g., cceug_C2/cceugbt0102.htm)")
+    doc_page_parser.add_argument("--section", type=str, default="", help="Optional heading substring")
+    doc_page_parser.add_argument("--max-chars", type=int, default=12000)
+
+    settings_parser = subparsers.add_parser("settings", help="Search CATNls UI option keys and Tools>Options docs")
+    settings_parser.add_argument("query", type=str, nargs="?", default="", help="UI wording or option key")
+    settings_parser.add_argument("--nls-file", type=str, default="", help="CATNls file stem (e.g., CATCuiOptionEditor)")
+    settings_parser.add_argument("--all", dest="all_entries", action="store_true", help="Do not restrict to option/LongHelp files")
+    settings_parser.add_argument("--limit", "-l", type=int, default=15)
+
+    samples_parser = subparsers.add_parser("samples", help="Search official CATIA V5 samples (text + binary CAD models)")
+    samples_parser.add_argument("query", type=str, nargs="?", default="", help="Filename or content keywords")
+    samples_parser.add_argument("--ext", type=str, default="", help="Extension filter (e.g., .csv, .catpart)")
+    samples_parser.add_argument("--module", "-m", type=str, default="", help="Module filter")
+    samples_parser.add_argument("--content", action="store_true", help="Print full text sample content")
+    samples_parser.add_argument("--text-only", action="store_true", help="Exclude binary CAD/Excel samples")
+    samples_parser.add_argument("--limit", "-l", type=int, default=10)
+
     args = parser.parse_args()
+
+    if args.command in ("docs", "doc-page", "settings", "samples"):
+        import json
+        from src.engine.docs_db import CatalystDocsDB
+        try:
+            docs_db = CatalystDocsDB()
+        except FileNotFoundError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+        if args.command == "docs":
+            print(json.dumps(
+                docs_db.search_docs(args.query, category=args.category, module=args.module, solution=args.solution, limit=args.limit),
+                indent=2, ensure_ascii=False
+            ))
+        elif args.command == "doc-page":
+            res = docs_db.get_doc_page(args.doc_id, section=args.section, max_chars=args.max_chars)
+            if not res:
+                print(f"Documentation page '{args.doc_id}' not found.")
+                sys.exit(1)
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+        elif args.command == "settings":
+            print(json.dumps(
+                docs_db.search_settings(args.query, nls_file=args.nls_file, options_only=not args.all_entries, limit=args.limit),
+                indent=2, ensure_ascii=False
+            ))
+        elif args.command == "samples":
+            print(json.dumps(
+                docs_db.search_samples(
+                    args.query,
+                    ext=args.ext,
+                    module=args.module,
+                    include_content=args.content,
+                    include_binary=not args.text_only,
+                    limit=args.limit,
+                ),
+                indent=2, ensure_ascii=False
+            ))
+        return
 
     if args.command == "info":
         try:

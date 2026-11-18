@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.engine.db import CatalystDB
+from src.engine.docs_db import CatalystDocsDB, resolve_docs_db_path
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -38,6 +39,24 @@ except (ImportError, ModuleNotFoundError):
             mcp = DummyMCP()
 
 _db_instance: Optional[CatalystDB] = None
+_docs_db_instance: Optional[CatalystDocsDB] = None
+
+
+def _core_db_missing_error() -> str:
+    return json.dumps(
+        {
+            "isError": True,
+            "error": (
+                "Core API database (dist/catalyst.db) is not initialized. "
+                "CATalyst follows BYOD (Bring Your Own Docs) and does not bundle proprietary Dassault binaries. "
+                "Initialize locally inside the isolated project virtual environment:\n"
+                "  1) uv sync\n"
+                "  2) uv run python build.py  (auto-detects licensed V5Automation.chm via CATEnv, or pass --chm <path>)\n"
+                "  3) Optional offline docs: uv run python build_docs.py"
+            ),
+        },
+        ensure_ascii=False,
+    )
 
 
 def get_db() -> Optional[CatalystDB]:
@@ -50,6 +69,24 @@ def get_db() -> Optional[CatalystDB]:
         return _db_instance
     except Exception as e:
         logger.error(f"Failed to connect to CatalystDB: {e}")
+        return None
+
+
+def get_docs_db() -> Optional[CatalystDocsDB]:
+    """Dynamically initializes or retrieves the optional CatalystDocsDB connection."""
+    global _docs_db_instance
+    if _docs_db_instance is not None:
+        if _docs_db_instance.db_path.exists():
+            return _docs_db_instance
+        _docs_db_instance = None
+    try:
+        resolved = resolve_docs_db_path()
+        if resolved is None:
+            return None
+        _docs_db_instance = CatalystDocsDB(resolved)
+        return _docs_db_instance
+    except Exception as e:
+        logger.error(f"Failed to connect to CatalystDocsDB: {e}")
         return None
 
 
@@ -88,10 +125,7 @@ def get_catia_interface(
 
         db = get_db()
         if not db:
-            return json.dumps({
-                "isError": True,
-                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
-            }, ensure_ascii=False)
+            return _core_db_missing_error()
 
         res = db.get_interface(
             target_name,
@@ -147,10 +181,7 @@ def get_catia_usecases(
 
         db = get_db()
         if not db:
-            return json.dumps({
-                "isError": True,
-                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
-            }, ensure_ascii=False)
+            return _core_db_missing_error()
 
         if not target_if and target_q:
             # If no interface name provided, search recipes across entire DB by intent query
@@ -226,10 +257,7 @@ def search_catia_recipes(
 
         db = get_db()
         if not db:
-            return json.dumps({
-                "isError": True,
-                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
-            }, ensure_ascii=False)
+            return _core_db_missing_error()
 
         results = db.search_recipes(
             query=search_query,
@@ -274,10 +302,7 @@ def get_catia_search_syntax(
 
         db = get_db()
         if not db:
-            return json.dumps({
-                "isError": True,
-                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
-            }, ensure_ascii=False)
+            return _core_db_missing_error()
 
         res = db.get_search_syntax(
             workbench=target_wb if target_wb else None,
@@ -324,10 +349,7 @@ def search_catia_api(
 
         db = get_db()
         if not db:
-            return json.dumps({
-                "isError": True,
-                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
-            }, ensure_ascii=False)
+            return _core_db_missing_error()
 
         results = db.search(search_query, item_type=filter_type, limit=limit)
         
@@ -346,6 +368,12 @@ def search_catia_api(
         }
         if reverse_hosts:
             payload["host_interfaces_summary"] = reverse_hosts
+        if len(results) == 0 and not reverse_hosts and get_docs_db() is not None:
+            payload["hint"] = (
+                "No COM Automation API matches found. If this is a GUI-only feature, batch protocol, "
+                "or Tools>Options/.CATSettings item, try search_catia_docs, search_catia_settings, "
+                "or search_catia_samples."
+            )
 
         return json.dumps(payload, indent=2, ensure_ascii=False)
     except Exception as e:
@@ -389,10 +417,7 @@ def get_catia_enum(
 
         db = get_db()
         if not db:
-            return json.dumps({
-                "isError": True,
-                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
-            }, ensure_ascii=False)
+            return _core_db_missing_error()
 
         res = db.get_enum(name=target_name, value=value, member_name=target_member)
         if not res:
@@ -409,6 +434,163 @@ def get_catia_enum(
             "isError": True,
             "error": f"Internal Server Error in get_catia_enum: {str(e)}"
         }, ensure_ascii=False)
+
+
+def _docs_missing_error() -> str:
+    return json.dumps(
+        {
+            "isError": True,
+            "error": (
+                "Offline documentation DB (catalyst_docs.db) is not built on this machine. "
+                "Run `uv run python build_docs.py --doc-root <Bxxdoc/English/online> "
+                "--install-root <Bxx/win_b64>` or set CATALYST_DOCS_DB_PATH."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+def search_catia_docs(
+    query: str = "",
+    keyword: str = "",
+    category: str = "all",
+    module: str = "",
+    solution: str = "",
+    limit: int = 10,
+) -> str:
+    """
+    Search version-aligned offline CATIA V5 User's Guide, Tools>Options, and Automation technical articles.
+    Returns compact metadata, official warnings previews, and doc_ids for targeted retrieval via get_catia_doc_page.
+
+    Args:
+        query: Full-text search keywords (e.g., 'Catalog Batch Mode', 'Document Template', 'Resolved Family Components')
+        keyword: Alias for query
+        category: Filter by 'all' (default), 'user_guide', 'options', or 'automation_doc'
+        module: Optional module directory filter (e.g., 'cceug_C2', 'bascuctg_C2', 'cfyugpkt_C2')
+        solution: Optional CATIA solution filter (e.g., 'Infrastructure', 'Mechanical Design')
+        limit: Max results to return (default 10, max 30)
+    """
+    try:
+        q = (query or keyword).strip()
+        if not q:
+            return json.dumps({"isError": True, "error": "Missing query."}, ensure_ascii=False)
+        docs_db = get_docs_db()
+        if not docs_db:
+            return _docs_missing_error()
+        res = docs_db.search_docs(query=q, category=category, module=module, solution=solution, limit=limit)
+        return json.dumps(res, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.exception(f"Exception in search_catia_docs: {e}")
+        return json.dumps({"isError": True, "error": f"Internal Server Error in search_catia_docs: {str(e)}"}, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_catia_doc_page(
+    doc_id: str = "",
+    section: str = "",
+    include_images: bool = True,
+    max_chars: int = 12000,
+) -> str:
+    """
+    Retrieve the cleaned text, official warnings, options anchors, and embedded screenshot paths
+    for a specific CATIA V5 offline documentation page.
+
+    Args:
+        doc_id: Page ID from search_catia_docs (e.g., 'cceug_C2/cceugbt0102.htm' or 'bascuctg0000.htm')
+        section: Optional heading substring to slice only a specific section and save tokens
+        include_images: Include relative and resolved local absolute paths of content screenshots (default True)
+        max_chars: Maximum characters of body_text to return (default 12000)
+    """
+    try:
+        target = (doc_id or "").strip()
+        if not target:
+            return json.dumps({"isError": True, "error": "Missing doc_id."}, ensure_ascii=False)
+        docs_db = get_docs_db()
+        if not docs_db:
+            return _docs_missing_error()
+        res = docs_db.get_doc_page(
+            doc_id=target, section=section, include_images=include_images, max_chars=max_chars
+        )
+        if not res:
+            return json.dumps({"isError": True, "error": f"Documentation page '{target}' not found."}, ensure_ascii=False)
+        return json.dumps(res, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.exception(f"Exception in get_catia_doc_page: {e}")
+        return json.dumps({"isError": True, "error": f"Internal Server Error in get_catia_doc_page: {str(e)}"}, ensure_ascii=False)
+
+
+@mcp.tool()
+def search_catia_settings(
+    query: str = "",
+    nls_file: str = "",
+    options_only: bool = True,
+    limit: int = 15,
+) -> str:
+    """
+    Search CATIA V5 msgcatalog (*.CATNls) UI labels/keys and cross-link Tools>Options documentation pages.
+    Useful for mapping UI wording to .CATSettings attributes and CATBatGenXMLSet/CATBatImpXMLSet workflows.
+
+    Args:
+        query: English UI wording or option key substring (e.g., 'ResolvedComponents', 'dynamic resolution', 'FavoriteCatalog')
+        nls_file: Optional CATNls file stem filter (e.g., 'CATCuiOptionEditor')
+        options_only: Prioritize option/setting/LongHelp entries first (default True; auto-relaxes if 0 hits)
+        limit: Max CATNls entries to return (default 15, max 50)
+    """
+    try:
+        if not (query or "").strip() and not (nls_file or "").strip():
+            return json.dumps({"isError": True, "error": "Provide 'query' or 'nls_file'."}, ensure_ascii=False)
+        docs_db = get_docs_db()
+        if not docs_db:
+            return _docs_missing_error()
+        res = docs_db.search_settings(query=query, nls_file=nls_file, options_only=options_only, limit=limit)
+        return json.dumps(res, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.exception(f"Exception in search_catia_settings: {e}")
+        return json.dumps({"isError": True, "error": f"Internal Server Error in search_catia_settings: {str(e)}"}, ensure_ascii=False)
+
+
+@mcp.tool()
+def search_catia_samples(
+    query: str = "",
+    ext: str = "",
+    module: str = "",
+    include_content: bool = False,
+    include_binary: bool = True,
+    max_chars: int = 6000,
+    limit: int = 10,
+) -> str:
+    """
+    Search official CATIA V5 sample files — both plain-text (.csv, .CATScript, .txt, .xml)
+    and binary CAD/Excel samples (.CATPart, .CATProduct, .catalog, .cgr, .xls).
+    Stores portable relative paths and resolves machine-local abs_path from CATALYST_DOC_ROOT / CATALYST_INSTALL_ROOT.
+
+    Args:
+        query: Keywords matching filename, module, path, or text sample content (e.g., 'BatchCatalog', 'PktRod', 'FHC_M03')
+        ext: Optional extension filter (e.g., '.csv', '.catscript', '.catpart', '.catalog')
+        module: Optional module directory filter (e.g., 'cceug_C2', 'cfyugpkt_C2')
+        include_content: Return full text content for non-binary samples (default False)
+        include_binary: Include binary CAD/Excel samples indexed by relative path (default True)
+        max_chars: Max characters per text sample when include_content=True (default 6000)
+        limit: Max samples to return (default 10, max 30)
+    """
+    try:
+        docs_db = get_docs_db()
+        if not docs_db:
+            return _docs_missing_error()
+        res = docs_db.search_samples(
+            query=query,
+            ext=ext,
+            module=module,
+            include_content=include_content,
+            include_binary=include_binary,
+            max_chars=max_chars,
+            limit=limit,
+        )
+        return json.dumps(res, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.exception(f"Exception in search_catia_samples: {e}")
+        return json.dumps({"isError": True, "error": f"Internal Server Error in search_catia_samples: {str(e)}"}, ensure_ascii=False)
 
 
 if __name__ == "__main__":

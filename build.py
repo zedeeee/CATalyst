@@ -8,12 +8,20 @@ Executes the full pipeline:
 4. Run Post-Build Smoke Tests on DB Engine and MCP Server
 """
 
+import argparse
 import sys
 import json
 import logging
 from pathlib import Path
+from src.engine.local_config import (
+    LOCAL_PATHS_CONFIG,
+    is_running_in_venv,
+    resolve_chm_path,
+    save_local_paths_config,
+)
 from src.parser.chm_unpacker import unpack_chm
 from src.parser.builder import CatalystBuilder
+from src.parser.docs_parser import detect_release_from_path
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -118,28 +126,104 @@ def run_smoke_test(db_path: Path):
     logger.info("--- Smoke Tests Passed Successfully (8/8) ---\n")
 
 
+def _warn_if_global_python():
+    if not is_running_in_venv():
+        logger.warning(
+            "[ENV NOTICE] Running under global Python (%s). "
+            "Use an isolated virtual environment via `uv sync && uv run python build.py` to avoid polluting system packages.",
+            sys.executable,
+        )
+
+
+def _prompt_chm_interactive() -> Path | None:
+    if not sys.stdin or not sys.stdin.isatty():
+        return None
+    try:
+        raw = input("Enter path to your licensed V5Automation.chm (leave blank to abort): ").strip().strip('"').strip("'")
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if not raw:
+        return None
+    p = Path(raw)
+    return p.resolve() if p.is_file() else None
+
+
 def main():
-    chm_file = Path("data/V5Automation.chm")
+    parser = argparse.ArgumentParser(
+        description="Build CATalyst core API database (dist/catalyst.db) from your local licensed V5Automation.chm (BYOD)."
+    )
+    parser.add_argument(
+        "--chm",
+        default="",
+        help="Path to V5Automation.chm (auto-detected from CATEnv / dist/local/paths.json if omitted).",
+    )
+    parser.add_argument(
+        "--force-unpack",
+        action="store_true",
+        help="Re-extract data/raw even if HTML files already exist.",
+    )
+    parser.add_argument(
+        "--with-docs",
+        action="store_true",
+        help="Also run build_docs.py after building dist/catalyst.db.",
+    )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip interactive confirmation prompt for detected local environment paths.",
+    )
+    args = parser.parse_args()
+
+    _warn_if_global_python()
+
     raw_dir = Path("data/raw")
     dist_dir = Path("dist")
+    has_html = raw_dir.exists() and any(raw_dir.glob("**/*.htm"))
 
-    # Step 1: Unpack if needed
-    if not chm_file.exists():
-        logger.error(f"Cannot find CHM file at {chm_file}. Please place your V5Automation.chm there.")
-        sys.exit(1)
-        
-    has_html = False
-    if raw_dir.exists():
-        has_html = any(raw_dir.glob("**/*.htm"))
-        
-    if not has_html:
-        logger.info("Raw HTML not found. Extracting from CHM...")
+    chm_file = resolve_chm_path(explicit=args.chm or None)
+    if not chm_file and (args.force_unpack or not has_html):
+        logger.warning(
+            "[BYOD NOTICE] CATalyst does not ship proprietary Dassault Systèmes binaries (V5Automation.chm).\n"
+            "Could not auto-detect V5Automation.chm via CATALYST_CHM_PATH, dist/local/paths.json, or CATEnv."
+        )
+        chm_file = _prompt_chm_interactive()
+        if not chm_file:
+            logger.error(
+                "Aborting: V5Automation.chm not found. Pass `--chm <path/to/V5Automation.chm>` "
+                "or set CATALYST_CHM_PATH in your isolated environment."
+            )
+            sys.exit(1)
+
+    logger.info("====================================================")
+    logger.info("  CATalyst Core API Builder (BYOD / Isolated Local) ")
+    logger.info("====================================================")
+    logger.info(f"  Python Env   : {sys.executable} ({'venv' if is_running_in_venv() else 'GLOBAL - venv recommended'})")
+    logger.info(f"  Source CHM   : {chm_file or '(reusing existing data/raw)'} [read-only]")
+    logger.info(f"  Output DB    : {(dist_dir / 'catalyst.db').resolve()} [project-local, gitignored]")
+    logger.info(f"  Local Config : {LOCAL_PATHS_CONFIG} [project-local, gitignored]")
+    logger.info("  System Scope : Zero changes to system PATH, registry, or CATIA install directory.")
+
+    if not args.yes and sys.stdin and sys.stdin.isatty():
+        try:
+            ans = input("Proceed with local initialization using these paths? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            sys.exit(1)
+        if ans in ("n", "no"):
+            logger.info("Cancelled by user.")
+            sys.exit(0)
+
+    if chm_file:
+        save_local_paths_config(chm_path=chm_file, release=detect_release_from_path(chm_file))
+
+    if args.force_unpack or not has_html:
+        logger.info("Extracting raw HTML from licensed CHM...")
         success = unpack_chm(chm_file, raw_dir)
         if not success:
             logger.error("Failed to extract CHM. Aborting build.")
             sys.exit(1)
     else:
-        logger.info("Found existing raw HTML extraction. Skipping unpack.")
+        logger.info("Found existing raw HTML extraction. Skipping unpack (use --force-unpack to re-extract).")
 
     # Step 2 & 3: ETL & Build Database
     logger.info("Starting CATalyst Builder...")
@@ -154,7 +238,14 @@ def main():
         logger.error(f"Post-build smoke tests failed: {e}")
         sys.exit(1)
 
-    logger.info("Build finished successfully.")
+    logger.info("Core API database build finished successfully.")
+
+    if args.with_docs:
+        import subprocess
+        cmd = [sys.executable, str(Path(__file__).resolve().parent / "build_docs.py")]
+        if args.yes:
+            cmd.append("--yes")
+        subprocess.run(cmd, check=True)
 
 
 if __name__ == "__main__":
