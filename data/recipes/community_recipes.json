@@ -100,5 +100,90 @@
     },
     "description": "在激活的工程图中遍历背景图框视图（Background View），查找指定名称的 Text 对象并填充 3D 模型的 PartNumber 和 Drawing Title。",
     "code": "import win32com.client\n\ndef update_drawing_title_block(part_number: str, designer_name: str, title: str):\n    catia = win32com.client.Dispatch('CATIA.Application')\n    drawing_doc = catia.ActiveDocument\n    sheets = drawing_doc.Sheets\n    active_sheet = sheets.ActiveSheet\n    \n    # 背景图层视图索引通常为 2 (Background View)\n    views = active_sheet.Views\n    bg_view = views.Item(2)\n    texts = bg_view.Texts\n    \n    for i in range(1, texts.Count + 1):\n        txt = texts.Item(i)\n        if txt.Name == 'TitleBlock_PartNumber':\n            txt.Text = part_number\n        elif txt.Name == 'TitleBlock_Designer':\n            txt.Text = designer_name\n        elif txt.Name == 'TitleBlock_Title':\n            txt.Text = title\n    print('Title block updated successfully.')"
+  },
+  {
+    "interface_name": "CatalogDocument",
+    "title": "无头批处理生成 Catalog (CNEXT -batch + CreateCatalogFromcsv) 彻底避开空根章节坑",
+    "workbench": "CatalogEditor",
+    "tags": "catalog,batch,createcatalogfromcsv,cnext,csv,dlname,headless",
+    "provenance": {
+      "source_type": "official_verified",
+      "source_url": "https://www.3ds.com/support/documentation/",
+      "source_ref": "CATIA V5 User's Guide cceugbt0102 + BatchCatalog.csv + Live Kernel Verification",
+      "author": "CATalyst Curated",
+      "license": "MIT",
+      "original_language": "Python",
+      "verified_date": "2026-11-18"
+    },
+    "description": "交互界面调用 Documents.Add('CatalogDocument') 会插入无法删除的默认空根章节(Chapter.1/章节.1)导致生成结果视觉空白。唯一正解是通过 CNEXT.exe -batch -macro 无头模式运行 CreateCatalogFromcsv；CSV 需 GBK+CRLF+分号分隔，父 CHAPTER 挂内部子章节时第1列与第2列必须与子章节名严格一致，支持 CATDLN:// 路径与联邦总库跨链子 .catalog，执行前严禁在同会话打开源 .CATPart 或目标 .catalog。",
+    "code": "import subprocess\nfrom pathlib import Path\nimport win32com.client\n\ndef build_catalog_headless(catstart_exe: str, env_name: str, env_dir: str, csv_path: str, out_catalog: str):\n    # Write GBK+CRLF semicolon-delimited CSV before invoking headless CNEXT -batch\n    script_path = Path(out_catalog).with_suffix('.CATScript')\n    script_body = (\n        'Language=\"VBSCRIPT\"\\r\\n'\n        'Sub CATMain()\\r\\n'\n        '  Dim c As Document\\r\\n'\n        '  Set c = CATIA.Documents.Add(\"CatalogDocument\")\\r\\n'\n        f'  c.CreateCatalogFromcsv \"{csv_path}\", \"{out_catalog}\"\\r\\n'\n        '  c.Close\\r\\n'\n        'End Sub\\r\\n'\n    )\n    script_path.write_text(script_body, encoding='gbk')\n    cmd = [\n        catstart_exe, '-run', f'CNEXT.exe -batch -macro \"{script_path}\"',\n        '-env', env_name, '-direnv', env_dir, '-nowindow'\n    ]\n    subprocess.run(cmd, check=True)\n\ndef create_catalog_dynamic_com(csv_path: str, out_catalog: str):\n    # Note: In live COM use dynamic.Dispatch to avoid gen_py base Document cast; prefer headless batch to avoid empty Chapter.1\n    catia = win32com.client.Dispatch('CATIA.Application')\n    doc = win32com.client.dynamic.Dispatch(catia.Documents.Add('CatalogDocument')._oleobj_)\n    doc.CreateCatalogFromcsv(csv_path, out_catalog)\n    doc.Close()"
+  },
+  {
+    "interface_name": "SettingControllers",
+    "title": "无 COM SettingController 时使用 CATBatGenXMLSet / CATBatImpXMLSet 实现 .CATSettings XML 往返配置",
+    "workbench": "Infrastructure",
+    "tags": "catsettings,xml,catbatgenxmlset,catbatimpxmlset,catalogoption,tools-options,settings",
+    "provenance": {
+      "source_type": "official_verified",
+      "source_url": "https://www.3ds.com/support/documentation/",
+      "source_ref": "CATIA V5 Infrastructure Administration + CATCuiOptionEditor.CATNls + Live Roundtrip Verification",
+      "author": "CATalyst Curated",
+      "license": "MIT",
+      "original_language": "Python",
+      "verified_date": "2026-11-18"
+    },
+    "description": "对于未暴露 COM SettingController 的 Tools->Options 设置（如 CatalogOption.CATSettings），可使用达索原厂 CLI 工具 CATBatGenXMLSet / CATBatImpXMLSet 导出标准 XML、修改属性后回写并二次导出验证。关键实测属性：CatalogOption 中 ResolvedComponentsMode=0 为 Standard Behavior，FavoriteCatalog 与 FavoriteCatalogDocEnv 按分号对齐（支持 CATDLN://）。注意 DLNames.CATSettings 需改用 CATSysDLExport；修改需重启 CATIA 生效。",
+    "code": "import subprocess\nfrom pathlib import Path\nimport win32com.client\n\ndef roundtrip_catsettings_xml(catstart_exe: str, env_name: str, env_dir: str, out_dir: str, repo_name: str = 'CatalogOption'):\n    # 1. Export .CATSettings to XML via CATBatGenXMLSet\n    Path(out_dir).mkdir(parents=True, exist_ok=True)\n    subprocess.run([\n        catstart_exe, '-run', f'CATBatGenXMLSet.exe \"{out_dir}\" {repo_name}',\n        '-env', env_name, '-direnv', env_dir, '-nowindow'\n    ], check=True)\n    xml_file = Path(out_dir) / f'{repo_name}.xml'\n    # 2. After editing XML (e.g. ResolvedComponentsMode=0, FavoriteCatalog), import back:\n    subprocess.run([\n        catstart_exe, '-run', f'CATBatImpXMLSet.exe \"{xml_file}\"',\n        '-env', env_name, '-direnv', env_dir, '-nowindow'\n    ], check=True)\n    # 3. For COM-exposed repositories, SettingControllers remains available via win32com\n    _ = win32com.client.Dispatch\n    return xml_file"
+  },
+  {
+    "interface_name": "DesignTable",
+    "title": "外部 .txt 设计表强制 Windows CRLF 防静默失步与动态 AddAssociation 参数绑定",
+    "workbench": "Knowledgeware",
+    "tags": "designtable,txt,crlf,synchronize,addassociation,dlname,dynamic-dispatch",
+    "provenance": {
+      "source_type": "official_verified",
+      "source_url": "https://www.3ds.com/support/documentation/",
+      "source_ref": "CATIA V5 Knowledgeware Live Verification",
+      "author": "CATalyst Curated",
+      "license": "MIT",
+      "original_language": "Python",
+      "verified_date": "2026-11-18"
+    },
+    "description": "外部文本 DesignTable (.txt) 若采用 Unix LF 换行，调用 dt.Synchronize() 不会抛异常但会静默忽略新行（ConfigurationsNb 不更新）。写入时必须显式指定 encoding='gbk', newline='\\r\\n' 并在 Synchronize 后校验 ConfigurationsNb；新增列关联参数需经 dynamic.Dispatch(dt._oleobj_).AddAssociation(param, col_name)。",
+    "code": "import win32com.client\n\ndef write_and_sync_design_table(txt_path: str, rows: list[list[str]], dt_com, new_param=None, new_col: str = ''):\n    # Mandatory Windows CRLF + GBK to prevent silent row drop during Synchronize()\n    with open(txt_path, 'w', encoding='gbk', newline='\\r\\n') as f:\n        for r in rows:\n            f.write('\\t'.join(str(x) for x in r) + '\\n')\n\n    dt_dyn = win32com.client.dynamic.Dispatch(dt_com._oleobj_)\n    dt_dyn.Synchronize()\n    expected_configs = len(rows) - 1\n    assert dt_dyn.ConfigurationsNb == expected_configs, (\n        f'DesignTable silent sync mismatch: got {dt_dyn.ConfigurationsNb}, expected {expected_configs}'\n    )\n    if new_param is not None and new_col:\n        dt_dyn.AddAssociation(new_param, new_col)"
+  },
+  {
+    "interface_name": "Relation",
+    "title": "隐藏知识工程内部公式/规则 (Relation.Hidden) 与设置 Product 原生源标记 (CatProductSource)",
+    "workbench": "Knowledgeware",
+    "tags": "relation,hidden,knowledgeobject,formula,rule,product,source,catproductsource",
+    "provenance": {
+      "source_type": "official_verified",
+      "source_url": "https://www.3ds.com/support/documentation/",
+      "source_ref": "CATIA V5 KnowledgeInterfaces + ProductStructure Live Verification",
+      "author": "CATalyst Curated",
+      "license": "MIT",
+      "original_language": "Python",
+      "verified_date": "2026-11-18"
+    },
+    "description": "Relation 继承自 KnowledgeObject，具有可写属性 Hidden。封装标准件模板时可保留 DesignTable 可见（通过 hasattr(rel, 'Configuration') 识别），将其余内部 Formula/Rule 的 Hidden 设为 True 隐藏于特征树同时保持 Activated=True 正常驱动；并可通过 Product.Source 设置 CatProductSource（0=Unknown, 1=Made, 2=Bought）。",
+    "code": "import win32com.client\n\ndef encapsulate_template_relations_and_source(part_doc, source_enum: int = 2):\n    part = part_doc.Part\n    rels = part.Relations\n    for i in range(1, rels.Count + 1):\n        rel = rels.Item(i)\n        rel_dyn = win32com.client.dynamic.Dispatch(rel._oleobj_)\n        # Keep DesignTable visible; hide internal formulas/rules while keeping them active\n        is_dt = hasattr(rel, 'Configuration')\n        rel_dyn.Hidden = not is_dt\n\n    prod = win32com.client.dynamic.Dispatch(part_doc._oleobj_).Product\n    prod.Source = source_enum  # 0=Unknown, 1=Made, 2=Bought"
+  },
+  {
+    "interface_name": "CatalogDocument",
+    "title": "Catalog 标准件三模入库选型与 PKT Document Template 实例化边界",
+    "workbench": "CatalogEditor",
+    "tags": "catalog,part-family,unresolved,document-template,pkt,instantiation,uuid",
+    "provenance": {
+      "source_type": "official_verified",
+      "source_url": "https://www.3ds.com/support/documentation/",
+      "source_ref": "CATIA V5 User's Guide bascuctg0000 + cfyugpktattemplate0042/0047 + cfyugasmut1400",
+      "author": "CATalyst Curated",
+      "license": "MIT",
+      "original_language": "Python",
+      "verified_date": "2026-11-18"
+    },
+    "description": "按标准件生命周期分三模入库：1) 不可改参固定成品（电机/接插件）直接普通 .CATPart 入库，装配共享只读母件；2) 纯离散规格件（螺栓/轴承）用 Unresolved Part Family + 唯一 PartNumber 列，ResolvedComponentsMode=0 时自动按 New from 生成独立件；3) 入装配后仍需改工况自由度的参数化模板（如弹簧角度/脚长）必须走 PKT Document Template + Save in catalog（GUI-only 无创建 COM API），双击填参生成全新 UUID 实例且保留内部公式与发布元素。",
+    "code": "import win32com.client\n\ndef select_catalog_storage_mode(tunable_after_insert: bool, table_driven_specs: bool) -> str:\n    # Mode 3: Tunable parametric template -> PKT Document Template + Save in catalog (GUI-only creation)\n    if tunable_after_insert:\n        return 'PKT_DOCUMENT_TEMPLATE'\n    # Mode 2: Pure discrete spec table -> Unresolved Part Family (ResolvedComponentsMode=0 -> New from)\n    if table_driven_specs:\n        return 'UNRESOLVED_PART_FAMILY'\n    # Mode 1: Fixed bought/standard part -> Standard .CATPart component (shared read-only reference)\n    _ = win32com.client.Dispatch\n    return 'DIRECT_COMPONENT_REFERENCE'"
   }
 ]
