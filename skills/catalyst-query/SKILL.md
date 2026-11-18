@@ -1,64 +1,59 @@
 ---
 name: catalyst-query
-description: Queries the local CATalyst V5 Automation API database to retrieve precise interfaces, methods, properties, enums, and usecases. Use this whenever generating CATIA V5 macros or Python automation scripts to prevent hallucinations.
+description: Queries the local CATalyst knowledge base (10 MCP tools + symmetric CLI) for exact CATIA V5 COM Automation interfaces, inherited members, enums, Selection.Search syntax, Python win32com recipes, offline User's Guide docs, Tools > Options CATNls keys, and official samples. Use whenever writing CATIA V5 automation scripts or resolving CATIA configuration/batch workflows.
 ---
 
-# CATalyst V5 API Query Skill
+# CATalyst CATIA V5 Knowledge Skill
 
-This skill allows you to retrieve exact COM signatures and inherited properties for CATIA V5 Automation.
+Use CATalyst as the ground-truth source before writing any CATIA V5 macro, Python `win32com` script, batch pipeline, or `Tools > Options` guide.
 
-## When to use this skill
-- Whenever a user asks you to write a CATIA V5 macro, script, or plugin.
-- When you are unsure about the exact spelling of a CATIA interface, property, or method.
-- When you need to see how a specific CATIA interface is used in official VBScript examples.
+## Prerequisites & Quick Setup
 
-## Prerequisites
-The user must have compiled the CATalyst database locally. If the database is missing, instruct the user to run `uv run build.py` at the root of the CATalyst repository.
+- Core API database (`dist/catalyst.db`) must be built locally.
+- If missing, run the one-click installer at the repository root:
+  - Windows: `.\install.ps1` (or `uv run python install.py`)
+  - macOS / Linux: `./install.sh` (requires `7z`/`p7zip` to unpack `.chm`, or copy a pre-built `dist/catalyst.db`)
+- Optional offline docs extension (`dist/local/catalyst_docs.db`) enables 4 extra tools for User's Guide, `CATNls` settings, and official samples (`uv run python build_docs.py`).
 
-## Instructions
+## Tool Selection Priority
 
-1. Use your `run_command` tool to execute queries against the CATalyst CLI.
-2. The CLI is located at `catalyst_cli.py` in the CATalyst repository root. You can run it via `uv run python catalyst_cli.py <command> <args>`.
+1. **Prefer MCP Tools (if `catalyst` MCP server is connected)**:
+   - **Core COM API & Recipes (6 tools, always active with `dist/catalyst.db`)**:
+     - `get_catia_interface(name, member_name="", include_usecases=True, max_usecases=3)` — full interface + inherited members (`declared_in`) + `pywin32` `[out]` hints
+     - `search_catia_api(keyword, item_type="", limit=15)` — BM25 search across interfaces, enums, properties, methods (with reverse host lookup)
+     - `get_catia_enum(name="", value=None, member_name="")` — bidirectional enum lookup
+     - `get_catia_usecases(interface="", member="", source="", limit=5)` — official VBScript + community Python examples
+     - `search_catia_recipes(query, workbench="", limit=5)` — industrial `win32com` automation recipes
+     - `get_catia_search_syntax(workbench="")` — exact `Selection.Search` prefixes and grammar
+   - **Offline Docs, Settings & Samples (4 tools, active when `dist/local/catalyst_docs.db` exists)**:
+     - `search_catia_docs(query, category="", module="", solution="", limit=10)` — User's Guide & `Tools > Options` pages
+     - `get_catia_doc_page(doc_id, section="", max_chars=6000)` — clean Markdown body, warnings, `linked_docs`, `linked_files`, resolved screenshot `abs_path`
+     - `search_catia_settings(query, limit=10)` — `*.CATNls` UI labels/option keys + cross-linked `Tools > Options` pages
+     - `search_catia_samples(query, ext="", include_content=False, limit=10)` — text samples (`.csv`, `.CATScript`, `.xml`) & binary CAD templates (`.CATPart`, `.catalog`)
 
-### Available Commands
+2. **CLI Fallback (if MCP is unavailable)**:
+   Run from the CATalyst repository root via `uv run python catalyst_cli.py <command>`:
 
-**1. Search for APIs:**
-If you don't know the exact interface name, search for it first:
-```bash
-uv run python catalyst_cli.py search "fillet"
-```
-This returns a list of matches (interfaces and enums).
+   ```bash
+   # Core COM API & Recipes
+   uv run python catalyst_cli.py search "PartNumber" --type property
+   uv run python catalyst_cli.py get Pad --member GetDirection
+   uv run python catalyst_cli.py enum CatProductSource --value 1
+   uv run python catalyst_cli.py recipe "export step"
+   uv run python catalyst_cli.py usecase Pad --source official
+   uv run python catalyst_cli.py syntax --workbench PartDesign
 
-**2. Get Interface Signatures:**
-Once you know the exact interface name (e.g., `Pad`), retrieve its full definition:
-```bash
-uv run python catalyst_cli.py get Pad
-```
-This returns a comprehensive Markdown document containing:
-- All properties and methods (including those inherited from parent classes like `Prism` or `Shape`).
-- The expected types for all parameters and return values.
-- Official VBScript examples showing how to instantiate or manipulate the interface.
-
-**3. Get Enumeration Values:**
-If you need the exact integer or constant names for an enum (e.g., `CatHoleType`):
-```bash
-uv run python catalyst_cli.py enum CatHoleType
-```
-
-**4. Search Community Recipes & Practical Code:**
-If you need real-world industrial implementation patterns (e.g. batch exporting STEP, BOM extraction, drawing title blocks):
-```bash
-uv run python catalyst_cli.py recipe "export step"
-```
-
-**5. Get Interface Use Cases:**
-To retrieve official tutorials or community examples for a specific interface:
-```bash
-uv run python catalyst_cli.py usecase Pad --source official
-```
+   # Offline Docs, CATNls Settings & Official Samples (requires catalyst_docs.db)
+   uv run python catalyst_cli.py docs "Catalog Batch Mode" --category user_guide
+   uv run python catalyst_cli.py doc-page "cceug_C2/cceugbt0102.htm" --section "Batch Mode"
+   uv run python catalyst_cli.py settings "FavoriteCatalog"
+   uv run python catalyst_cli.py samples "BatchCatalog" --ext .csv --content
+   ```
 
 ## Rules for CATIA V5 Automation Generation
-- **Pure win32com Target**: Generate clean Python code targeting `win32com.client` unless the user explicitly requests VBScript/VBA.
-- **Never Guess**: Do not invent properties or methods. If you cannot find the API via this skill, inform the user that it might not be exposed to Automation or you need a different keyword.
-- **Respect Inheritance**: The `get` command automatically merges inherited properties. You can safely call any method listed under "Methods", even if the "Inherited From" column shows it belongs to a parent class.
-- **Type Checking**: Pay attention to the expected types (e.g., `CATBSTR` is a string, `CATSafeArrayVariant` is usually a tuple/list in Python or Array in VBS).
+
+- **Never Guess APIs**: Do not invent interfaces, properties, methods, or enum values. Always verify exact spelling, parameter count/direction, and return type first.
+- **Respect Inheritance**: `get_catia_interface` / `get` fuses parent chains (`Pad -> Prism -> SketchBasedShape -> Shape -> AnyObject`). Any inherited member listed is valid to call directly.
+- **Target Clean Python `win32com`**: Generate pure `win32com.client` Python code unless the user explicitly asks for VBScript/VBA.
+- **Check `pywin32` Type Hints**: Watch `[out]` / `[inout]` tuple return hints and pass `CATSafeArrayVariant` as Python `list`/`tuple`.
+- **Use Non-COM Tools When COM Returns 0 Hits**: If an action is GUI/batch/settings-only (no COM API), query `search_catia_docs`, `search_catia_settings`, or `search_catia_recipes` instead of guessing.

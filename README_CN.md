@@ -56,11 +56,11 @@ CATalyst 严格坚守**纯只读知识大脑定位**（不耦合任何活体 `wi
 
 ---
 
-## 合规声明与环境隔离原则
+## 本地构建与环境隔离
 
-- **BYOD（自带授权文档）**：本仓库基于 MIT 开源，**不包含任何达索原厂商业二进制文件或衍生数据库**（`V5Automation.chm`、`dist/catalyst.db`、`dist/local/catalyst_docs.db` 均由 `.gitignore` 严格排除）。所有数据库均须用户在本地基于自身合法授权的 CATIA V5 安装目录自行初始化生成。
-- **默认使用隔离虚拟环境**：全流程推荐通过 `uv sync` / `uv run` 在项目专属 `.venv/` 中运行，严禁污染系统全局 Python；`build.py` 与 `build_docs.py` 若检测到运行在全局 Python 下会显式发出告警。
-- **本机环境配置一律显式提醒**：读取本机 CATIA 路径或写入本机私有配置（`dist/local/paths.json`）前，构建器会完整打印读写清单并在交互终端请求用户确认；**绝不修改系统 `PATH`、Windows 注册表或 CATIA 安装目录**。
+- **本地按需构建**：核心库（`dist/catalyst.db`）与可选离线文档库（`dist/local/catalyst_docs.db`）均在本地由本机 CATIA V5 文档生成，并由 `.gitignore` 忽略。
+- **默认虚拟环境隔离**：全流程推荐通过 `uv sync` / `uv run` 在项目专属 `.venv/` 中运行；`build.py` 与 `build_docs.py` 若检测到运行在全局 Python 下会显式发出告警。
+- **零系统侵入**：读取本机 CATIA 路径或写入本机私有配置（`dist/local/paths.json`）前先打印读写清单；**绝不修改系统 `PATH`、Windows 注册表或 CATIA 安装目录**。
 
 ---
 
@@ -68,11 +68,38 @@ CATalyst 严格坚守**纯只读知识大脑定位**（不耦合任何活体 `wi
 
 ### 环境要求
 
-- Python 3.10+
-- [uv](https://docs.astral.sh/uv/)（自动创建与管理项目隔离 `.venv/`）
-- 本机合法授权的 CATIA V5 安装（核心库需 `V5Automation.chm`；离线文档扩展库需同版本 `Bxxdoc` 与 `Bxx/win_b64`）。
+| 依赖项 | 级别 | 说明 |
+| :--- | :--- | :--- |
+| **Python 3.10+** 与 **[uv](https://docs.astral.sh/uv/)** | 必需 | 自动管理项目隔离 `.venv/`（全部依赖均提供预编译 wheel，无需 C++ 编译环境）。 |
+| **[7-Zip (`7z`)](https://www.7-zip.org/)** | **强烈推荐**（Linux/macOS 原地解包 `.chm` 时必需） | 极速且完全免疫含空格路径（Windows：`winget install 7zip.7zip`；macOS：`brew install p7zip`；Ubuntu：`sudo apt install p7zip-full`）。Windows 未装 7-Zip 时，安装脚本会让你明确选择「中断去装 7-Zip / 手动指定 `7z.exe` / 显式使用 `hh.exe`（`--use-hh`）」。 |
+| **本机 CATIA V5 文档** | `V5Automation.chm` 必需 / `Bxxdoc` 可选 | Windows 下通过 `CATEnv` 自动发现（强制版本对齐）；若未找到，安装脚本会交互提示输入或直接拖入路径（兼容空格及 `/`、`\`）。 |
 
-### 1. 初始化项目隔离虚拟环境
+### 一键安装（推荐）
+
+一条命令自动完成「同步 `.venv` → 检查 7-Zip（缺失时交互选择）→ 探测或指定 `V5Automation.chm` 与同版本 `Bxxdoc` → 构建本地 SQLite 知识库 → 安全合并写入 MCP 配置（自动备份 `.bak`）→ 端到端验收」：
+
+```powershell
+# Windows (PowerShell)
+git clone https://github.com/zedeeee/CATalyst.git
+cd CATalyst
+.\install.ps1
+# 若新机器默认策略阻止运行本地脚本：
+# powershell -ExecutionPolicy Bypass -File .\install.ps1
+
+# 常用参数示例：
+# .\install.ps1 --chm "D:\Dassault\B27\win_b64\code\bin\V5Automation.chm"
+# .\install.ps1 --client cursor     # 支持 antigravity（默认）、cursor、claude 或 --config <路径>
+# .\install.ps1 --yes               # 非交互模式（Windows 无 7-Zip 时需显式追加 --use-hh）
+```
+
+```bash
+# macOS / Linux（需安装 p7zip/7z 原地解包 CHM，或直接复用已构建好的 dist/catalyst.db）
+./install.sh
+```
+
+### 分步手动安装
+
+#### 1. 初始化项目隔离虚拟环境
 
 ```bash
 git clone https://github.com/zedeeee/CATalyst.git
@@ -80,9 +107,9 @@ cd CATalyst
 uv sync --extra dev
 ```
 
-### 2. 初始化核心 API 数据库（`dist/catalyst.db`，必选）
+#### 2. 初始化核心 API 数据库（`dist/catalyst.db`）
 
-`build.py` 会通过达索官方 `CATEnv` 自动定位本机 `<CATInstallPath>/code/bin/V5Automation.chm`，显式展示路径清单并请求确认后在本地生成 `dist/catalyst.db`（也支持 `--chm` 显式指定或 `--with-docs` 一键顺带构建离线文档库）：
+`build.py` 会通过 `CATEnv` 自动定位本机 `<CATInstallPath>/code/bin/V5Automation.chm`，确认后本地生成 `dist/catalyst.db`（支持 `--chm` 手动指定、Windows 无 7-Zip 时 `--use-hh`、或 `--with-docs` 一步同时构建离线文档库）：
 
 ```bash
 # 通过 CATEnv 自动发现本机 V5Automation.chm（交互确认后本地构建）
@@ -93,7 +120,7 @@ uv run python build.py --chm "D:/Dassault/B27/win_b64/code/bin/V5Automation.chm"
 uv run python build.py --with-docs
 ```
 
-### 3. 一键构建本地版本对齐离线文档库（`dist/local/catalyst_docs.db`，可选）
+#### 3. 一键构建本地版本对齐离线文档库（`dist/local/catalyst_docs.db`）
 
 直接指向本机顶级 `Bxxdoc` 与 `Bxx` 目录（自动归一化子目录，且绝不向数据库写入任何本机绝对路径）：
 
@@ -104,7 +131,7 @@ uv run python build_docs.py \
   --release B27
 ```
 
-- 默认产物落盘在 `dist/local/catalyst_docs.db`（已在 `.gitignore` 中排除，避免商业文档资产污染 Git）。
+- 默认产物落盘在 `dist/local/catalyst_docs.db`（已在 `.gitignore` 中忽略）。
 - 支持 `--modules cceug_C2,bascuctg_C2` 做定向增量调试，支持 `--workers N` 调节并发进程数。
 
 #### 全新电脑 5 级路径自动发现与绑定机制
@@ -120,27 +147,38 @@ uv run python build_docs.py \
 
 ## MCP Server 配置
 
-将 CATalyst 注册到 MCP 客户端配置（如 Antigravity 的 `~/.gemini/config/mcp_config.json`，或 Claude Desktop / Cursor）。在 `env` 中配置两个根目录，即可让所有可移植相对路径在运行时动态解析为本机真实路径：
+运行 `.\install.ps1` / `./install.sh` 会自动将 `catalyst` 合并写入目标 MCP 客户端配置（Antigravity `~/.gemini/config/mcp_config.json`、Cursor `~/.cursor/mcp.json` 或 Claude Desktop `claude_desktop_config.json`）。如需手动配置，可参考：
 
 ```json
 {
   "mcpServers": {
     "catalyst": {
       "command": "uv",
-      "args": ["run", "python", "-m", "src.mcp.server"],
-      "cwd": "<path-to-CATalyst>",
+      "args": [
+        "--directory",
+        "<path-to-CATalyst>",
+        "run",
+        "python",
+        "-m",
+        "src.mcp.server"
+      ],
       "env": {
-        "CATALYST_DOC_ROOT": "C:/Program Files/Dassault Systemes/B27doc",
-        "CATALYST_INSTALL_ROOT": "C:/Program Files/Dassault Systemes/B27"
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+        "CATALYST_INSTALL_ROOT": "C:\\Program Files\\Dassault Systemes\\B27",
+        "CATALYST_DOC_ROOT": "C:\\Program Files\\Dassault Systemes\\B27doc"
       }
     }
   }
 }
 ```
 
+> 请使用当前系统的原生路径分隔符（Windows 在 JSON 中写 `\\`，macOS/Linux 写 `/`）。若仅使用 6 个核心 COM API / Recipe 工具，可省略 `CATALYST_DOC_ROOT`。
+
 可选环境变量：
 - `CATALYST_DB_PATH`：覆写核心 `catalyst.db` 路径。
 - `CATALYST_DOCS_DB_PATH`：覆写或指向团队共享的 `catalyst_docs.db` 路径。
+- `CATALYST_7Z_PATH`：手动指定 `7z`/`7za` 可执行文件路径。
 
 ---
 
@@ -189,23 +227,36 @@ uv run python catalyst_cli.py samples "AISC_C" --ext .catpart
 CATalyst/
 ├── data/
 │   ├── recipes/                    # 经 AST 校验的社区工业 Recipe 库 (JSON)
-│   └── raw/                        # 本地解包的 CHM HTML (.gitignore 隔离)
+│   └── raw/                        # 本地解包的 CHM HTML (.gitignore 忽略)
 ├── dist/
-│   ├── catalyst.db                 # 本地构建的核心 COM API + Recipe 数据库 (.gitignore 隔离)
-│   └── local/                      # 本地可移植 catalyst_docs.db 与 paths.json (.gitignore 隔离)
+│   ├── catalyst.db                 # 本地构建的核心 COM API + Recipe 数据库 (.gitignore 忽略)
+│   └── local/                      # 本地可移植 catalyst_docs.db 与 paths.json (.gitignore 忽略)
+├── docs/
+│   ├── architecture.md             # 系统架构、Schema、路径发现与排错参考
+│   └── tutorial.md                 # CLI 与 MCP 实战使用手册
 ├── src/
-│   ├── parser/                     # CHM 解析、继承链融合、离线文档/CATNls/样板 ETL 流水线
-│   ├── engine/                     # 线程安全 SQLite FTS5 检索引擎 (db.py, docs_db.py, search_grammar.py)
+│   ├── parser/                     # CHM 解包器 (7z/hh)、HTML 解析、继承链融合、离线文档 ETL
+│   ├── engine/                     # 线程安全 SQLite FTS5 检索引擎 (db.py, docs_db.py, local_config.py)
 │   ├── mcp/                        # FastMCP / MCPServer 服务端，暴露 10 个工具 (server.py)
 │   └── client/                     # 可选宿主机诊断工具
-├── skills/                         # Agent Skill 定义
-├── tests/                          # Pytest 测试套件（单元、FTS5、Schema、跨机移植、MCP 测试）
+├── skills/catalyst-query/          # Agent Skill 定义 (SKILL.md)
+├── tests/                          # 自动化测试套件（引擎、FTS5、Schema、跨机移植、安装器、MCP）
+├── install.ps1 / install.sh        # 一键安装入口（Windows / macOS / Linux）
+├── install.py                      # 跨平台安装与 MCP 配置注册核心脚本
 ├── build.py                        # 核心 API 库构建入口 + 8 项冒烟测试
 ├── build_docs.py                   # 离线文档/CATNls/样板扩展库构建入口 + 冒烟测试
 ├── catalyst_cli.py                 # 对称 CLI 入口
+├── AGENTS.md                       # AI Agent 防幻觉规范与快速部署 SOP
 ├── README.md                       # 英文主文档（默认）
 └── README_CN.md                    # 简体中文文档
 ```
+
+## 延伸文档
+
+- [系统架构与部署排错手册](docs/architecture.md)
+- [CLI 与 MCP 实战使用手册](docs/tutorial.md)
+- [社区实战配方贡献指南](data/recipes/README.md)
+- [AI Agent 规范与快速部署 SOP](AGENTS.md)
 
 ---
 
