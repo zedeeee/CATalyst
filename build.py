@@ -9,6 +9,7 @@ Executes the full pipeline:
 """
 
 import argparse
+import os
 import sys
 import json
 import logging
@@ -16,10 +17,11 @@ from pathlib import Path
 from src.engine.local_config import (
     LOCAL_PATHS_CONFIG,
     is_running_in_venv,
+    parse_user_path,
     resolve_chm_path,
     save_local_paths_config,
 )
-from src.parser.chm_unpacker import unpack_chm
+from src.parser.chm_unpacker import ensure_unpacker_choice, unpack_chm
 from src.parser.builder import CatalystBuilder
 from src.parser.docs_parser import detect_release_from_path
 
@@ -139,23 +141,32 @@ def _prompt_chm_interactive() -> Path | None:
     if not sys.stdin or not sys.stdin.isatty():
         return None
     try:
-        raw = input("Enter path to your licensed V5Automation.chm (leave blank to abort): ").strip().strip('"').strip("'")
+        raw = input("Enter path to local V5Automation.chm (leave blank to abort): ").strip()
     except (EOFError, KeyboardInterrupt):
         return None
-    if not raw:
-        return None
-    p = Path(raw)
-    return p.resolve() if p.is_file() else None
+    p = parse_user_path(raw)
+    return p.resolve() if (p and p.is_file()) else None
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build CATalyst core API database (dist/catalyst.db) from your local licensed V5Automation.chm (BYOD)."
+        description="Build CATalyst core API database (dist/catalyst.db) from local V5Automation.chm."
     )
     parser.add_argument(
         "--chm",
         default="",
         help="Path to V5Automation.chm (auto-detected from CATEnv / dist/local/paths.json if omitted).",
+    )
+    parser.add_argument(
+        "--7z",
+        dest="seven_zip",
+        default="",
+        help="Explicit path to 7z/7za executable.",
+    )
+    parser.add_argument(
+        "--use-hh",
+        action="store_true",
+        help="Windows only: explicitly allow hh.exe fallback when 7-Zip is unavailable.",
     )
     parser.add_argument(
         "--force-unpack",
@@ -177,34 +188,47 @@ def main():
 
     _warn_if_global_python()
 
+    if args.seven_zip:
+        sz_path = parse_user_path(args.seven_zip)
+        if not sz_path or not sz_path.is_file():
+            logger.error(f"Specified 7z executable not found: {args.seven_zip}")
+            sys.exit(1)
+        os.environ["CATALYST_7Z_PATH"] = str(sz_path.resolve())
+
     raw_dir = Path("data/raw")
     dist_dir = Path("dist")
     has_html = raw_dir.exists() and any(raw_dir.glob("**/*.htm"))
+    interactive = (not args.yes) and bool(sys.stdin and sys.stdin.isatty())
 
     chm_file = resolve_chm_path(explicit=args.chm or None)
     if not chm_file and (args.force_unpack or not has_html):
         logger.warning(
-            "[BYOD NOTICE] CATalyst does not ship proprietary Dassault Systèmes binaries (V5Automation.chm).\n"
             "Could not auto-detect V5Automation.chm via CATALYST_CHM_PATH, dist/local/paths.json, or CATEnv."
         )
         chm_file = _prompt_chm_interactive()
         if not chm_file:
             logger.error(
                 "Aborting: V5Automation.chm not found. Pass `--chm <path/to/V5Automation.chm>` "
-                "or set CATALYST_CHM_PATH in your isolated environment."
+                "or set CATALYST_CHM_PATH in your environment."
             )
             sys.exit(1)
 
+    allow_hh = args.use_hh
+    if args.force_unpack or not has_html:
+        ready, allow_hh = ensure_unpacker_choice(interactive=interactive, allow_hh_fallback=allow_hh)
+        if not ready:
+            sys.exit(1)
+
     logger.info("====================================================")
-    logger.info("  CATalyst Core API Builder (BYOD / Isolated Local) ")
+    logger.info("  CATalyst Core API Builder (Isolated Local Env)    ")
     logger.info("====================================================")
     logger.info(f"  Python Env   : {sys.executable} ({'venv' if is_running_in_venv() else 'GLOBAL - venv recommended'})")
     logger.info(f"  Source CHM   : {chm_file or '(reusing existing data/raw)'} [read-only]")
-    logger.info(f"  Output DB    : {(dist_dir / 'catalyst.db').resolve()} [project-local, gitignored]")
-    logger.info(f"  Local Config : {LOCAL_PATHS_CONFIG} [project-local, gitignored]")
+    logger.info(f"  Output DB    : {(dist_dir / 'catalyst.db').resolve()} [project-local]")
+    logger.info(f"  Local Config : {LOCAL_PATHS_CONFIG} [project-local]")
     logger.info("  System Scope : Zero changes to system PATH, registry, or CATIA install directory.")
 
-    if not args.yes and sys.stdin and sys.stdin.isatty():
+    if interactive:
         try:
             ans = input("Proceed with local initialization using these paths? [Y/n]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -217,8 +241,8 @@ def main():
         save_local_paths_config(chm_path=chm_file, release=detect_release_from_path(chm_file))
 
     if args.force_unpack or not has_html:
-        logger.info("Extracting raw HTML from licensed CHM...")
-        success = unpack_chm(chm_file, raw_dir)
+        logger.info("Extracting raw HTML from V5Automation.chm...")
+        success = unpack_chm(chm_file, raw_dir, allow_hh_fallback=allow_hh)
         if not success:
             logger.error("Failed to extract CHM. Aborting build.")
             sys.exit(1)
