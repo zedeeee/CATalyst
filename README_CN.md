@@ -56,15 +56,23 @@ CATalyst 严格坚守**纯只读知识大脑定位**（不耦合任何活体 `wi
 
 ---
 
+## 合规声明与环境隔离原则
+
+- **BYOD（自带授权文档）**：本仓库基于 MIT 开源，**不包含任何达索原厂商业二进制文件或衍生数据库**（`V5Automation.chm`、`dist/catalyst.db`、`dist/local/catalyst_docs.db` 均由 `.gitignore` 严格排除）。所有数据库均须用户在本地基于自身合法授权的 CATIA V5 安装目录自行初始化生成。
+- **默认使用隔离虚拟环境**：全流程推荐通过 `uv sync` / `uv run` 在项目专属 `.venv/` 中运行，严禁污染系统全局 Python；`build.py` 与 `build_docs.py` 若检测到运行在全局 Python 下会显式发出告警。
+- **本机环境配置一律显式提醒**：读取本机 CATIA 路径或写入本机私有配置（`dist/local/paths.json`）前，构建器会完整打印读写清单并在交互终端请求用户确认；**绝不修改系统 `PATH`、Windows 注册表或 CATIA 安装目录**。
+
+---
+
 ## 快速开始
 
 ### 环境要求
 
 - Python 3.10+
-- [uv](https://docs.astral.sh/uv/)（推荐）
-- 可选（启用离线文档扩展库）：与目标版本一致的本机 CATIA V5 离线帮助目录（`Bxxdoc`）及安装目录（`Bxx/win_b64`）。
+- [uv](https://docs.astral.sh/uv/)（自动创建与管理项目隔离 `.venv/`）
+- 本机合法授权的 CATIA V5 安装（核心库需 `V5Automation.chm`；离线文档扩展库需同版本 `Bxxdoc` 与 `Bxx/win_b64`）。
 
-### 1. 安装依赖
+### 1. 初始化项目隔离虚拟环境
 
 ```bash
 git clone https://github.com/zedeeee/CATalyst.git
@@ -72,16 +80,20 @@ cd CATalyst
 uv sync --extra dev
 ```
 
-### 2. 核心 API 数据库（`dist/catalyst.db`）
+### 2. 初始化核心 API 数据库（`dist/catalyst.db`，必选）
 
-仓库默认自带 R27 预编译核心库，克隆即可使用。如需适配本机其他版本，提取本机 `V5Automation.chm`（典型路径 `<CATInstall>/win_b64/code/bin/V5Automation.chm`，详见 [docs/chm_extraction_guide.md](docs/chm_extraction_guide.md)）覆盖后重建：
+`build.py` 会通过达索官方 `CATEnv` 自动定位本机 `<CATInstallPath>/code/bin/V5Automation.chm`，显式展示路径清单并请求确认后在本地生成 `dist/catalyst.db`（也支持 `--chm` 显式指定或 `--with-docs` 一键顺带构建离线文档库）：
 
 ```bash
-cp /path/to/V5Automation.chm data/V5Automation.chm
+# 通过 CATEnv 自动发现本机 V5Automation.chm（交互确认后本地构建）
 uv run python build.py
+
+# 手动指定 CHM 路径，或一步同时构建核心库 + 离线文档扩展库：
+uv run python build.py --chm "D:/Dassault/B27/win_b64/code/bin/V5Automation.chm"
+uv run python build.py --with-docs
 ```
 
-### 3. 一键构建本地版本对齐离线文档库（`dist/local/catalyst_docs.db`）
+### 3. 一键构建本地版本对齐离线文档库（`dist/local/catalyst_docs.db`，可选）
 
 直接指向本机顶级 `Bxxdoc` 与 `Bxx` 目录（自动归一化子目录，且绝不向数据库写入任何本机绝对路径）：
 
@@ -176,11 +188,11 @@ uv run python catalyst_cli.py samples "AISC_C" --ext .catpart
 ```text
 CATalyst/
 ├── data/
-│   ├── V5Automation.chm            # 官方 Automation CHM 源文件
-│   └── recipes/                    # 经 AST 校验的社区工业 Recipe 库 (JSON)
+│   ├── recipes/                    # 经 AST 校验的社区工业 Recipe 库 (JSON)
+│   └── raw/                        # 本地解包的 CHM HTML (.gitignore 隔离)
 ├── dist/
-│   ├── catalyst.db                 # 预编译核心 COM API + Recipe 数据库
-│   └── local/                      # 本地版本对齐 catalyst_docs.db (.gitignore 隔离)
+│   ├── catalyst.db                 # 本地构建的核心 COM API + Recipe 数据库 (.gitignore 隔离)
+│   └── local/                      # 本地可移植 catalyst_docs.db 与 paths.json (.gitignore 隔离)
 ├── src/
 │   ├── parser/                     # CHM 解析、继承链融合、离线文档/CATNls/样板 ETL 流水线
 │   ├── engine/                     # 线程安全 SQLite FTS5 检索引擎 (db.py, docs_db.py, search_grammar.py)

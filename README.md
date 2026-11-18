@@ -56,15 +56,23 @@ CATalyst enforces a **strict read-only knowledge plane** (zero live `win32com` c
 
 ---
 
+## Compliance & Environment Isolation Policy
+
+- **BYOD (Bring Your Own Docs)**: This repository is MIT-licensed and **contains zero proprietary Dassault Systèmes binaries or derived databases** (`V5Automation.chm`, `dist/catalyst.db`, and `dist/local/catalyst_docs.db` are all `.gitignore`d). Every user initializes locally from their own licensed CATIA V5 installation.
+- **Isolated Virtual Environment by Default**: Always use `uv sync` / `uv run` (project-local `.venv/`). `build.py` and `build_docs.py` explicitly warn if invoked under global Python.
+- **Explicit Environment Disclosure**: Before reading local CATIA directories or saving machine-local roots (`dist/local/paths.json`), builders print all resolved paths and ask for confirmation in interactive terminals. Zero modifications are ever made to system `PATH`, Windows Registry, or CATIA installation directories.
+
+---
+
 ## Quick Start
 
 ### Requirements
 
 - Python 3.10+
-- [uv](https://docs.astral.sh/uv/) (recommended)
-- Optional (for offline docs extension): Local CATIA V5 documentation (`Bxxdoc`) and/or installation (`Bxx/win_b64`) matching your target CATIA release.
+- [uv](https://docs.astral.sh/uv/) (manages the project-local `.venv/` automatically)
+- A licensed local CATIA V5 installation (`V5Automation.chm`, and optionally `Bxxdoc` + `Bxx/win_b64` for the offline docs extension).
 
-### 1. Install Dependencies
+### 1. Create Isolated Virtual Environment
 
 ```bash
 git clone https://github.com/zedeeee/CATalyst.git
@@ -72,16 +80,20 @@ cd CATalyst
 uv sync --extra dev
 ```
 
-### 2. Core API Database (`dist/catalyst.db`)
+### 2. Initialize Core API Database (`dist/catalyst.db`, Required)
 
-CATalyst ships with a pre-built R27 core API database ready to use immediately. To rebuild from your own CATIA release's `V5Automation.chm` (typically under `<CATInstall>/win_b64/code/bin/V5Automation.chm`, see [docs/chm_extraction_guide.md](docs/chm_extraction_guide.md)):
+`build.py` automatically discovers your licensed `V5Automation.chm` via Dassault `CATEnv` (`<CATInstallPath>/code/bin/V5Automation.chm`), displays all detected paths for confirmation, and builds `dist/catalyst.db` locally (pass `--chm` if installed in a custom location, or `--with-docs` to build both databases in one step):
 
 ```bash
-cp /path/to/V5Automation.chm data/V5Automation.chm
+# Auto-detect V5Automation.chm via CATEnv (interactive confirmation before build)
 uv run python build.py
+
+# Or specify CHM explicitly, or build Core API + Offline Docs together:
+uv run python build.py --chm "D:/Dassault/B27/win_b64/code/bin/V5Automation.chm"
+uv run python build.py --with-docs
 ```
 
-### 3. Build Local Offline Docs Extension (`dist/local/catalyst_docs.db`)
+### 3. Build Local Offline Docs Extension (`dist/local/catalyst_docs.db`, Optional)
 
 Run once against your version-aligned local CATIA documentation and install directory (pass top-level `Bxxdoc` / `Bxx` folders; paths are normalized automatically and never hardcoded into the resulting DB):
 
@@ -176,11 +188,11 @@ uv run python catalyst_cli.py samples "AISC_C" --ext .catpart
 ```text
 CATalyst/
 ├── data/
-│   ├── V5Automation.chm            # Official Automation CHM source
-│   └── recipes/                    # Curated, AST-verified community recipes (JSON)
+│   ├── recipes/                    # Curated, AST-verified community recipes (JSON)
+│   └── raw/                        # Local extracted CHM HTML (.gitignore)
 ├── dist/
-│   ├── catalyst.db                 # Pre-built core COM API + Recipes SQLite DB
-│   └── local/                      # Local version-aligned catalyst_docs.db (.gitignore)
+│   ├── catalyst.db                 # Locally built core COM API + Recipes SQLite DB (.gitignore)
+│   └── local/                      # Local portable catalyst_docs.db & paths.json (.gitignore)
 ├── src/
 │   ├── parser/                     # CHM HTML parser, inheritance tree, offline docs/CATNls/samples ETL
 │   ├── engine/                     # Thread-safe SQLite FTS5 engines (db.py, docs_db.py, search_grammar.py)

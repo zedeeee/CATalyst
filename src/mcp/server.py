@@ -42,6 +42,23 @@ _db_instance: Optional[CatalystDB] = None
 _docs_db_instance: Optional[CatalystDocsDB] = None
 
 
+def _core_db_missing_error() -> str:
+    return json.dumps(
+        {
+            "isError": True,
+            "error": (
+                "Core API database (dist/catalyst.db) is not initialized. "
+                "CATalyst follows BYOD (Bring Your Own Docs) and does not bundle proprietary Dassault binaries. "
+                "Initialize locally inside the isolated project virtual environment:\n"
+                "  1) uv sync\n"
+                "  2) uv run python build.py  (auto-detects licensed V5Automation.chm via CATEnv, or pass --chm <path>)\n"
+                "  3) Optional offline docs: uv run python build_docs.py"
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 def get_db() -> Optional[CatalystDB]:
     """Dynamically initializes or retrieves the CatalystDB connection."""
     global _db_instance
@@ -108,10 +125,7 @@ def get_catia_interface(
 
         db = get_db()
         if not db:
-            return json.dumps({
-                "isError": True,
-                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
-            }, ensure_ascii=False)
+            return _core_db_missing_error()
 
         res = db.get_interface(
             target_name,
@@ -167,10 +181,7 @@ def get_catia_usecases(
 
         db = get_db()
         if not db:
-            return json.dumps({
-                "isError": True,
-                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
-            }, ensure_ascii=False)
+            return _core_db_missing_error()
 
         if not target_if and target_q:
             # If no interface name provided, search recipes across entire DB by intent query
@@ -246,10 +257,7 @@ def search_catia_recipes(
 
         db = get_db()
         if not db:
-            return json.dumps({
-                "isError": True,
-                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
-            }, ensure_ascii=False)
+            return _core_db_missing_error()
 
         results = db.search_recipes(
             query=search_query,
@@ -294,10 +302,7 @@ def get_catia_search_syntax(
 
         db = get_db()
         if not db:
-            return json.dumps({
-                "isError": True,
-                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
-            }, ensure_ascii=False)
+            return _core_db_missing_error()
 
         res = db.get_search_syntax(
             workbench=target_wb if target_wb else None,
@@ -344,10 +349,7 @@ def search_catia_api(
 
         db = get_db()
         if not db:
-            return json.dumps({
-                "isError": True,
-                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
-            }, ensure_ascii=False)
+            return _core_db_missing_error()
 
         results = db.search(search_query, item_type=filter_type, limit=limit)
         
@@ -415,10 +417,7 @@ def get_catia_enum(
 
         db = get_db()
         if not db:
-            return json.dumps({
-                "isError": True,
-                "error": "Database not initialized. Please run `python build.py` or set CATALYST_DB_PATH."
-            }, ensure_ascii=False)
+            return _core_db_missing_error()
 
         res = db.get_enum(name=target_name, value=value, member_name=target_member)
         if not res:

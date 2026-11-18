@@ -15,6 +15,7 @@ from typing import Optional
 
 from src.engine.local_config import (
     LOCAL_PATHS_CONFIG,
+    is_running_in_venv,
     resolve_doc_root,
     resolve_install_root,
     save_local_paths_config,
@@ -131,7 +132,20 @@ def main() -> None:
         action="store_true",
         help="Skip post-build smoke tests.",
     )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip interactive confirmation prompt for detected local environment paths.",
+    )
     args = parser.parse_args()
+
+    if not is_running_in_venv():
+        logger.warning(
+            "[ENV NOTICE] Running under global Python (%s). "
+            "Prefer isolated virtual environment: `uv sync && uv run python build_docs.py`.",
+            sys.executable,
+        )
 
     doc_root = resolve_doc_root(explicit=args.doc_root or None, release_hint=args.release)
     rel_hint = args.release.strip() or detect_release_from_path(doc_root)
@@ -157,25 +171,34 @@ def main() -> None:
         )
         sys.exit(1)
 
+    logger.info("====================================================")
+    logger.info("  CATalyst Offline Documentation Extension Builder  ")
+    logger.info("====================================================")
+    logger.info(f"  Python Env   : {sys.executable} ({'venv' if is_running_in_venv() else 'GLOBAL - venv recommended'})")
+    logger.info(f"  Doc Root     : {doc_root or '(none)'} [read-only]")
+    logger.info(f"  Install Root : {install_root or '(none)'} [read-only]")
+    logger.info(f"  Release Tag  : {rel_hint}")
+    logger.info(f"  Output DB    : {args.output} [project-local, gitignored]")
+    logger.info(f"  Local Config : {LOCAL_PATHS_CONFIG} [project-local, gitignored]")
+    logger.info("  System Scope : Zero changes to system PATH, registry, or CATIA install directory.")
+
+    if not args.yes and sys.stdin and sys.stdin.isatty():
+        try:
+            ans = input("Proceed with local configuration/build using these paths? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            sys.exit(1)
+        if ans in ("n", "no"):
+            logger.info("Cancelled by user.")
+            sys.exit(0)
+
     if not args.no_save_paths:
         cfg_file = save_local_paths_config(doc_root=doc_root, install_root=install_root, release=rel_hint)
         logger.info(f"Saved machine-local paths to {cfg_file} (gitignored).")
 
     if args.set_paths:
-        logger.info(f"  Doc Root     : {doc_root or '(none)'}")
-        logger.info(f"  Install Root : {install_root or '(none)'}")
-        logger.info(f"  Release Tag  : {rel_hint}")
         return
 
     only_modules = [m.strip() for m in args.modules.split(",") if m.strip()] if args.modules else None
-
-    logger.info("====================================================")
-    logger.info("  CATalyst Offline Documentation Extension Builder  ")
-    logger.info("====================================================")
-    logger.info(f"  Doc Root     : {doc_root or '(none)'}")
-    logger.info(f"  Install Root : {install_root or '(none)'}")
-    logger.info(f"  Release Tag  : {rel_hint}")
-    logger.info(f"  Output DB    : {args.output}")
     if only_modules:
         logger.info(f"  Modules Only : {', '.join(only_modules)}")
 

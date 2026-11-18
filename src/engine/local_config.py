@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -23,6 +24,16 @@ from src.parser.docs_parser import normalize_doc_root, normalize_install_root
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 LOCAL_PATHS_CONFIG = PROJECT_ROOT / "dist" / "local" / "paths.json"
+
+
+def is_running_in_venv() -> bool:
+    """Return True if Python is executing inside an isolated virtual environment (.venv / conda)."""
+    return (
+        getattr(sys, "base_prefix", sys.prefix) != sys.prefix
+        or hasattr(sys, "real_prefix")
+        or bool(os.environ.get("VIRTUAL_ENV"))
+        or bool(os.environ.get("CONDA_PREFIX"))
+    )
 
 
 def _catenv_dirs() -> List[Path]:
@@ -109,6 +120,7 @@ def load_local_paths_config(config_path: Optional[Path] = None) -> Dict[str, str
 def save_local_paths_config(
     doc_root: Optional[Path] = None,
     install_root: Optional[Path] = None,
+    chm_path: Optional[Path] = None,
     release: str = "",
     config_path: Optional[Path] = None,
 ) -> Path:
@@ -120,10 +132,63 @@ def save_local_paths_config(
         current["doc_root"] = str(doc_root)
     if install_root:
         current["install_root"] = str(install_root)
+    if chm_path:
+        current["chm_path"] = str(chm_path)
     if release and release.lower() != "unknown":
         current["catia_release"] = release.upper()
     path.write_text(json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def resolve_chm_path(
+    explicit: Optional[str | Path] = None,
+    release_hint: str = "",
+    config_path: Optional[Path] = None,
+    catenv_dirs: Optional[List[Path]] = None,
+) -> Optional[Path]:
+    """
+    5-tier resolution for user's licensed V5Automation.chm (BYOD compliance):
+    1. Explicit --chm arg or CATALYST_CHM_PATH env var
+    2. Machine-local dist/local/paths.json ('chm_path')
+    3. Official Dassault CATEnv (<CATInstallPath>/code/bin/V5Automation.chm)
+    4. Project local drop-in data/V5Automation.chm (gitignored) or default Program Files
+    """
+    if explicit:
+        p = Path(explicit)
+        if p.is_file():
+            return p.resolve()
+
+    env_val = os.environ.get("CATALYST_CHM_PATH", "").strip()
+    if env_val:
+        p = Path(env_val)
+        if p.is_file():
+            return p.resolve()
+
+    local_cfg = load_local_paths_config(config_path)
+    if local_cfg.get("chm_path"):
+        p = Path(local_cfg["chm_path"])
+        if p.is_file():
+            return p.resolve()
+
+    inst = resolve_install_root(
+        release_hint=release_hint,
+        config_path=config_path,
+        catenv_dirs=catenv_dirs,
+    )
+    if inst:
+        for rel_sub in (
+            Path("code") / "bin" / "V5Automation.chm",
+            Path("online") / "V5Automation.chm",
+        ):
+            cand = inst / rel_sub
+            if cand.is_file():
+                return cand.resolve()
+
+    local_dropin = PROJECT_ROOT / "data" / "V5Automation.chm"
+    if local_dropin.is_file():
+        return local_dropin.resolve()
+
+    return None
 
 
 def resolve_doc_root(

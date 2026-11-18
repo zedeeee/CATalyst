@@ -218,3 +218,35 @@ def test_5tier_catenv_and_local_paths_config_discovery(tmp_path: Path, monkeypat
     assert page is not None and "path_setup_hint" in page
     smp = db.search_samples("BatchCatalog")
     assert "path_setup_hint" in smp
+
+
+def test_byod_chm_discovery_and_synthetic_ci_db(tmp_path: Path, monkeypatch):
+    from src.engine import local_config
+    from src.engine.db import CatalystDB
+    from tests.conftest import build_synthetic_core_db
+
+    # 1. CATEnv auto-discovers licensed V5Automation.chm from <CATInstallPath>/code/bin/
+    fake_inst = tmp_path / "E_drive" / "B27" / "win_b64"
+    (fake_inst / "resources" / "msgcatalog").mkdir(parents=True)
+    chm_file = fake_inst / "code" / "bin" / "V5Automation.chm"
+    chm_file.parent.mkdir(parents=True)
+    chm_file.write_bytes(b"ITSF_SYNTHETIC")
+
+    catenv_dir = tmp_path / "CATEnv"
+    catenv_dir.mkdir()
+    (catenv_dir / "CATIA_P3.B27.txt").write_text(f"CATInstallPath={fake_inst}\n", encoding="utf-8")
+
+    monkeypatch.delenv("CATALYST_CHM_PATH", raising=False)
+    monkeypatch.delenv("CATALYST_INSTALL_ROOT", raising=False)
+    found_chm = local_config.resolve_chm_path(
+        release_hint="B27", config_path=tmp_path / "missing.json", catenv_dirs=[catenv_dir]
+    )
+    assert found_chm == chm_file.resolve()
+
+    # 2. Synthetic core DB supports all core CatalystDB queries with zero proprietary binaries
+    synth_db = build_synthetic_core_db(tmp_path / "catalyst.db")
+    db = CatalystDB(synth_db)
+    pad = db.get_interface("Pad")
+    assert pad is not None and "Prism" in pad["inheritance_chain"]
+    assert db.get_enum("CatProductSource", value=1)["matched_value"]["name"] == "catProductMade"
+    assert len(db.search_recipes("CreateCatalogFromcsv")) > 0
