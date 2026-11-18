@@ -15,11 +15,11 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from src.parser.docs_parser import (
-    BINARY_SAMPLE_EXTS,
-    normalize_doc_root,
-    normalize_install_root,
+from src.engine.local_config import (
+    resolve_doc_root as _resolve_doc_root_5tier,
+    resolve_install_root as _resolve_install_root_5tier,
 )
+from src.parser.docs_parser import BINARY_SAMPLE_EXTS
 
 logger = logging.getLogger(__name__)
 
@@ -66,59 +66,19 @@ def resolve_docs_db_path(db_path: Optional[Union[str, Path]] = None) -> Optional
 
 
 def resolve_runtime_doc_root(meta: Dict[str, str]) -> Optional[Path]:
-    """
-    Resolve runtime doc root directory dynamically:
-    1. CATALYST_DOC_ROOT env var (recommended in MCP config; accepts Bxxdoc or Bxxdoc/English/online)
-    2. Legacy docs_meta['doc_root'] if present
-    3. Standard Dassault install path matching docs_meta['catia_release'] (e.g. B27doc/English/online)
-    """
-    env_val = os.environ.get("CATALYST_DOC_ROOT", "").strip()
-    if env_val:
-        norm = normalize_doc_root(Path(env_val))
-        if norm:
-            return norm
-
-    legacy = (meta.get("doc_root") or "").strip()
-    if legacy:
-        norm = normalize_doc_root(Path(legacy))
-        if norm:
-            return norm
-
-    release = (meta.get("catia_release") or "").strip()
-    if release and release.lower() != "unknown":
-        default_dir = Path(r"C:\Program Files\Dassault Systemes") / f"{release}doc"
-        norm = normalize_doc_root(default_dir)
-        if norm:
-            return norm
-    return None
+    """5-tier dynamic doc root resolution (MCP env -> dist/local/paths.json -> CATEnv -> default)."""
+    return _resolve_doc_root_5tier(
+        release_hint=meta.get("catia_release", ""),
+        legacy_meta_path=meta.get("doc_root", ""),
+    )
 
 
 def resolve_runtime_install_root(meta: Dict[str, str]) -> Optional[Path]:
-    """
-    Resolve runtime CATIA win_b64 install root dynamically:
-    1. CATALYST_INSTALL_ROOT env var (accepts Bxx or Bxx/win_b64)
-    2. Legacy docs_meta['install_root'] if present
-    3. Standard Dassault install path matching docs_meta['catia_release'] (e.g. B27/win_b64)
-    """
-    env_val = os.environ.get("CATALYST_INSTALL_ROOT", "").strip()
-    if env_val:
-        norm = normalize_install_root(Path(env_val))
-        if norm:
-            return norm
-
-    legacy = (meta.get("install_root") or "").strip()
-    if legacy:
-        norm = normalize_install_root(Path(legacy))
-        if norm:
-            return norm
-
-    release = (meta.get("catia_release") or "").strip()
-    if release and release.lower() != "unknown":
-        default_dir = Path(r"C:\Program Files\Dassault Systemes") / release
-        norm = normalize_install_root(default_dir)
-        if norm:
-            return norm
-    return None
+    """5-tier dynamic install root resolution (MCP env -> dist/local/paths.json -> CATEnv -> default)."""
+    return _resolve_install_root_5tier(
+        release_hint=meta.get("catia_release", ""),
+        legacy_meta_path=meta.get("install_root", ""),
+    )
 
 
 def _split_camel_case(text: str) -> str:
@@ -379,6 +339,12 @@ class CatalystDocsDB:
             page_abs = doc_root_path / row_dict["doc_id"]
             if page_abs.exists():
                 result["abs_path"] = str(page_abs)
+        else:
+            result["path_setup_hint"] = (
+                "Local CATIA doc root not configured on this machine (abs_path omitted). "
+                "Set CATALYST_DOC_ROOT in MCP env or run `uv run python build_docs.py --set-paths` "
+                "to point to your local Bxxdoc directory."
+            )
 
         if include_images:
             raw_imgs = json.loads(row_dict.get("images_json") or "[]")
@@ -618,10 +584,18 @@ class CatalystDocsDB:
                     item["preview"] = "\n".join(preview)[:300]
             results.append(item)
 
-        return {
+        out: Dict[str, Any] = {
             "catia_release": meta.get("catia_release", "unknown"),
             "doc_root_resolved": str(doc_root_path) if doc_root_path else None,
+            "install_root_resolved": str(install_root_path) if install_root_path else None,
             "query": q,
             "total_matches": len(results),
             "results": results,
         }
+        if not doc_root_path and not install_root_path:
+            out["path_setup_hint"] = (
+                "Local CATIA doc/install roots not configured on this machine (abs_path omitted). "
+                "Set CATALYST_DOC_ROOT / CATALYST_INSTALL_ROOT in MCP env or save them via "
+                "`uv run python build_docs.py --set-paths`."
+            )
+        return out

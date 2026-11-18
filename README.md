@@ -95,6 +95,15 @@ uv run python build_docs.py \
 - Output defaults to `dist/local/catalyst_docs.db` (ignored by `.gitignore` to prevent committing commercial Dassault assets).
 - Supports `--modules cceug_C2,bascuctg_C2` for targeted testing and `--workers N` for parallel tuning.
 
+#### Fresh Machine Path Auto-Discovery (5-Tier Precedence)
+
+On a fresh machine, CATalyst resolves local CATIA doc/install roots in strict priority order:
+1. **Explicit CLI / MCP `env`**: `CATALYST_DOC_ROOT` & `CATALYST_INSTALL_ROOT` (accepts top-level `Bxxdoc` / `Bxx` folders).
+2. **Machine-Local Config**: `dist/local/paths.json` (gitignored; saved automatically when running `build_docs.py`, or set standalone via `uv run python build_docs.py --set-paths` when reusing a pre-built `catalyst_docs.db`).
+3. **Dassault Official `CATEnv`**: Auto-parses `%ProgramData%\DassaultSystemes\CATEnv\*.txt` (`CATDocView` & `CATInstallPath`) — works regardless of install drive (`C:`, `D:`, `E:`, etc.).
+4. **Standard Default Path**: `C:\Program Files\Dassault Systemes\B*doc` and `B*\win_b64`.
+5. **Interactive Prompt / MCP Setup Hint**: In an interactive terminal `build_docs.py` prompts for the directory; at MCP runtime, missing roots emit `path_setup_hint` while keeping text search fully operational.
+
 ---
 
 ## MCP Server Configuration
@@ -194,6 +203,7 @@ CATalyst/
 uv run pytest
 ```
 
-## License
+## Credits & License
 
-[MIT License](LICENSE)
+- Co-architected and built with **Google Antigravity & Gemini**.
+- Released under the [MIT License](LICENSE).

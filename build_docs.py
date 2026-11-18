@@ -1,20 +1,30 @@
 #!/usr/bin/env python
 """
-Local Offline Documentation Extension Builder for CATalyst.
+Local Offline Documentation Extension Builder & Path Setup Tool for CATalyst.
 Compiles version-aligned CATIA V5 User's Guide HTML (Bxxdoc), msgcatalog (*.CATNls),
-and official plain-text samples into dist/local/catalyst_docs.db.
+and official samples into portable dist/local/catalyst_docs.db.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from pathlib import Path
 from typing import Optional
 
+from src.engine.local_config import (
+    LOCAL_PATHS_CONFIG,
+    resolve_doc_root,
+    resolve_install_root,
+    save_local_paths_config,
+)
 from src.parser.docs_builder import CatalystDocsBuilder
+from src.parser.docs_parser import (
+    detect_release_from_path,
+    normalize_doc_root,
+    normalize_install_root,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -22,37 +32,20 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
-def _auto_detect_doc_root() -> Optional[Path]:
-    env_val = os.environ.get("CATALYST_DOC_ROOT", "").strip()
-    if env_val and Path(env_val).exists():
-        return Path(env_val)
-    base = Path(r"C:\Program Files\Dassault Systemes")
-    if base.exists():
-        for cand in sorted(base.glob("B*doc"), reverse=True):
-            online = cand / "English" / "online"
-            if online.exists():
-                return online
-    return None
-
-
-def _auto_detect_install_root(release_hint: str = "") -> Optional[Path]:
-    env_val = os.environ.get("CATALYST_INSTALL_ROOT", "").strip()
-    if env_val and Path(env_val).exists():
-        return Path(env_val)
-    base = Path(r"C:\Program Files\Dassault Systemes")
-    if not base.exists():
+def _prompt_path_interactive(label: str, normalizer) -> Optional[Path]:
+    if not sys.stdin or not sys.stdin.isatty():
         return None
-    if release_hint:
-        exact = base / release_hint / "win_b64"
-        if exact.exists():
-            return exact
-    for cand in sorted(base.glob("B*"), reverse=True):
-        if cand.name.lower().endswith("doc"):
-            continue
-        win64 = cand / "win_b64"
-        if (win64 / "resources" / "msgcatalog").exists():
-            return win64
-    return None
+    try:
+        raw = input(f"Enter {label} (leave blank to skip): ").strip().strip('"').strip("'")
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if not raw:
+        return None
+    norm = normalizer(Path(raw))
+    if not norm:
+        logger.warning(f"Path not found or invalid: {raw}")
+        return None
+    return norm
 
 
 def run_docs_smoke_test(db_path: Path) -> None:
@@ -61,7 +54,10 @@ def run_docs_smoke_test(db_path: Path) -> None:
     logger.info("\n--- Starting Offline Docs Smoke Tests ---")
     db = CatalystDocsDB(db_path)
     meta = db.get_meta()
-    logger.info(f"  [1/4] Loaded catalyst_docs.db (release={meta.get('catia_release')}, pages={meta.get('page_count')})")
+    logger.info(
+        f"  [1/4] Loaded catalyst_docs.db (release={meta.get('catia_release')}, "
+        f"pages={meta.get('page_count')}, samples={meta.get('sample_count')})"
+    )
     assert int(meta.get("page_count", 0)) > 0 or int(meta.get("nls_count", 0)) > 0, "Empty docs database"
 
     if int(meta.get("page_count", 0)) > 0:
@@ -80,24 +76,24 @@ def run_docs_smoke_test(db_path: Path) -> None:
     if int(meta.get("sample_count", 0)) > 0:
         smp = db.search_samples("BatchCatalog", include_content=True, limit=5)
         assert smp["total_matches"] > 0, "Smoke test failed: 'BatchCatalog' sample not found"
-        logger.info(f"  [4/4] Official text samples search verified ({smp['results'][0]['sample_id']})")
+        logger.info(f"  [4/4] Official sample search verified ({smp['results'][0]['sample_id']})")
 
     logger.info("--- Offline Docs Smoke Tests Passed ---\n")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build local version-aligned CATalyst offline documentation DB (dist/local/catalyst_docs.db)."
+        description="Build or configure local CATalyst offline documentation DB (dist/local/catalyst_docs.db)."
     )
     parser.add_argument(
         "--doc-root",
         default="",
-        help="Path to CATIA offline docs online directory (e.g. <Install>/B27doc/English/online)",
+        help="Path to CATIA offline docs root (e.g. D:/Dassault/B27doc or .../English/online)",
     )
     parser.add_argument(
         "--install-root",
         default="",
-        help="Path to CATIA win_b64 install root containing resources/msgcatalog and startup/",
+        help="Path to CATIA installation root (e.g. D:/Dassault/B27 or .../win_b64)",
     )
     parser.add_argument(
         "--release",
@@ -112,7 +108,7 @@ def main() -> None:
     parser.add_argument(
         "--modules",
         default="",
-        help="Optional comma-separated module dirs to index (e.g. cceug_C2,bascuctg_C2,cfyugpkt_C2). Omit for full build.",
+        help="Optional comma-separated module dirs to index (e.g. cceug_C2,bascuctg_C2). Omit for full build.",
     )
     parser.add_argument(
         "--workers",
@@ -121,24 +117,55 @@ def main() -> None:
         help="Worker processes for HTML parsing (0 = auto, up to 8).",
     )
     parser.add_argument(
+        "--set-paths",
+        action="store_true",
+        help="Only configure and persist machine-local doc/install roots to dist/local/paths.json without rebuilding DB.",
+    )
+    parser.add_argument(
+        "--no-save-paths",
+        action="store_true",
+        help="Do not save resolved doc/install roots into dist/local/paths.json.",
+    )
+    parser.add_argument(
         "--skip-smoke-test",
         action="store_true",
         help="Skip post-build smoke tests.",
     )
     args = parser.parse_args()
 
-    doc_root = Path(args.doc_root) if args.doc_root else _auto_detect_doc_root()
-    from src.parser.docs_parser import detect_release_from_path
-
+    doc_root = resolve_doc_root(explicit=args.doc_root or None, release_hint=args.release)
     rel_hint = args.release.strip() or detect_release_from_path(doc_root)
-    install_root = Path(args.install_root) if args.install_root else _auto_detect_install_root(rel_hint)
+    install_root = resolve_install_root(explicit=args.install_root or None, release_hint=rel_hint)
+    if rel_hint == "unknown":
+        rel_hint = detect_release_from_path(install_root)
+
+    # Interactive prompt on fresh machines when auto-discovery finds nothing
+    if not doc_root and (args.set_paths or not install_root):
+        doc_root = _prompt_path_interactive("CATIA offline doc root (e.g. D:\\Dassault\\B27doc)", normalize_doc_root)
+    if not install_root and (args.set_paths or not doc_root):
+        install_root = _prompt_path_interactive("CATIA install root (e.g. D:\\Dassault\\B27)", normalize_install_root)
+
+    if rel_hint == "unknown":
+        rel_hint = detect_release_from_path(doc_root) or detect_release_from_path(install_root) or "unknown"
 
     if not doc_root and not install_root:
         logger.error(
-            "Could not locate CATIA offline docs or install directory. "
-            "Pass --doc-root / --install-root or set CATALYST_DOC_ROOT / CATALYST_INSTALL_ROOT."
+            "Could not auto-detect CATIA offline docs or install directory (checked MCP env, "
+            "dist/local/paths.json, CATEnv, and default Program Files).\n"
+            "Pass --doc-root / --install-root, set CATALYST_DOC_ROOT / CATALYST_INSTALL_ROOT, "
+            "or run interactively to configure."
         )
         sys.exit(1)
+
+    if not args.no_save_paths:
+        cfg_file = save_local_paths_config(doc_root=doc_root, install_root=install_root, release=rel_hint)
+        logger.info(f"Saved machine-local paths to {cfg_file} (gitignored).")
+
+    if args.set_paths:
+        logger.info(f"  Doc Root     : {doc_root or '(none)'}")
+        logger.info(f"  Install Root : {install_root or '(none)'}")
+        logger.info(f"  Release Tag  : {rel_hint}")
+        return
 
     only_modules = [m.strip() for m in args.modules.split(",") if m.strip()] if args.modules else None
 

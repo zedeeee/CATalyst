@@ -167,3 +167,54 @@ def test_portable_relative_db_relocation_and_linked_assets(tmp_path: Path, monke
     monkeypatch.setattr(mcp_server, "resolve_docs_db_path", lambda: None)
     missing_res = json.loads(mcp_server.search_catia_docs(query="Catalog"))
     assert missing_res.get("isError") is True
+
+
+def test_5tier_catenv_and_local_paths_config_discovery(tmp_path: Path, monkeypatch):
+    from src.engine import local_config
+
+    custom_root = tmp_path / "D_drive"
+    doc_root, install_root = _create_synthetic_catia_env(custom_root)
+
+    # Create synthetic CATEnv file pointing to non-default D_drive path
+    catenv_dir = tmp_path / "CATEnv"
+    catenv_dir.mkdir()
+    (catenv_dir / "CATIA_P3.V5-6R2017.B27.txt").write_text(
+        f"CATInstallPath={install_root}\nCATDocView={custom_root / 'B27doc'}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("CATALYST_DOC_ROOT", raising=False)
+    monkeypatch.delenv("CATALYST_INSTALL_ROOT", raising=False)
+    missing_cfg = tmp_path / "no_paths.json"
+
+    # Tier 3: CATEnv auto-discovery works for arbitrary custom drives
+    found_doc = local_config.resolve_doc_root(
+        release_hint="B27", config_path=missing_cfg, catenv_dirs=[catenv_dir]
+    )
+    found_inst = local_config.resolve_install_root(
+        release_hint="B27", config_path=missing_cfg, catenv_dirs=[catenv_dir]
+    )
+    assert found_doc == doc_root.resolve()
+    assert found_inst == install_root.resolve()
+
+    # Tier 2: dist/local/paths.json persistence overrides CATEnv
+    cfg_file = tmp_path / "paths.json"
+    local_config.save_local_paths_config(
+        doc_root=custom_root / "B27doc",
+        install_root=custom_root / "B27",
+        release="B27",
+        config_path=cfg_file,
+    )
+    assert local_config.resolve_doc_root(config_path=cfg_file, catenv_dirs=[]) == doc_root.resolve()
+    assert local_config.resolve_install_root(config_path=cfg_file, catenv_dirs=[]) == install_root.resolve()
+
+    # Unconfigured machine emits clear path_setup_hint without failing
+    out_db = tmp_path / "portable.db"
+    CatalystDocsBuilder(output_db=out_db, doc_root=doc_root, install_root=install_root, release="B27", workers=1).build()
+    monkeypatch.setattr("src.engine.docs_db.resolve_runtime_doc_root", lambda meta: None)
+    monkeypatch.setattr("src.engine.docs_db.resolve_runtime_install_root", lambda meta: None)
+    db = CatalystDocsDB(out_db)
+    page = db.get_doc_page("cceug_C2/cceugbt0102.htm")
+    assert page is not None and "path_setup_hint" in page
+    smp = db.search_samples("BatchCatalog")
+    assert "path_setup_hint" in smp

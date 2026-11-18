@@ -95,6 +95,15 @@ uv run python build_docs.py \
 - 默认产物落盘在 `dist/local/catalyst_docs.db`（已在 `.gitignore` 中排除，避免商业文档资产污染 Git）。
 - 支持 `--modules cceug_C2,bascuctg_C2` 做定向增量调试，支持 `--workers N` 调节并发进程数。
 
+#### 全新电脑 5 级路径自动发现与绑定机制
+
+在新机器上，CATalyst 按严格优先级解析本机 CATIA 文档与安装根目录：
+1. **显式 CLI / MCP `env`（最高优先级）**：`CATALYST_DOC_ROOT` 与 `CATALYST_INSTALL_ROOT`（直接填顶级 `Bxxdoc` / `Bxx` 即可）。
+2. **本机私有配置**：`dist/local/paths.json`（已被 `.gitignore` 忽略；跑 `build_docs.py` 自动写入；若是直接拷贝团队预编译的 `catalyst_docs.db`，执行 `uv run python build_docs.py --set-paths` 即可一步绑定本机目录无需重建）。
+3. **达索官方 `CATEnv` 自动嗅探**：自动读取 `%ProgramData%\DassaultSystemes\CATEnv\*.txt` 里的 `CATDocView` 与 `CATInstallPath`——无论装在 `C:`/`D:`/`E:` 哪个盘都零配置直出。
+4. **标准默认目录兜底**：扫描 `C:\Program Files\Dassault Systemes\B*doc` 与 `B*\win_b64`。
+5. **交互引导 / MCP 提示兜底**：全都没找到时，CLI 在交互终端直接提示输入路径；MCP 运行时在保持全文搜索可用的前提下返回 `path_setup_hint`，提示 Agent 询问用户配置根目录。
+
 ---
 
 ## MCP Server 配置
@@ -194,6 +203,7 @@ CATalyst/
 uv run pytest
 ```
 
-## 许可证
+## 致谢与许可证
 
-[MIT License](LICENSE)
+- 由 **Google Antigravity & Gemini** 协助架构设计与构建。
+- 基于 [MIT License](LICENSE) 开源。
