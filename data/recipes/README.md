@@ -45,3 +45,12 @@
 2. **纯 win32com Target**：代码统一使用原生 `win32com.client` 编写，不引入第三方重型非标准封装。
 3. **函数化与异常处理**：每个配方封装为独立函数，包含清晰的入参类型标注与基础 `try...except` 错误处理。
 
+## ✅ 提交前自动化校验
+
+新增或修改配方后，运行 Schema 与 Python AST 语法校验测试确认通过：
+
+```bash
+uv run pytest tests/test_recipes_schema.py
+```
+
+

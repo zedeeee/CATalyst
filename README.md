@@ -43,7 +43,7 @@ CATalyst enforces a **strict read-only knowledge plane** (zero live `win32com` c
             ┌────────────────────────────────┼────────────────────────────────┐
             ▼                                ▼                                ▼
      MCP Server (10 Tools)            CLI (catalyst_cli.py)             Agent Skill
-   (Antigravity / Cursor / Claude)      (< 300 Token Cards)         (On-Demand Recall)
+(Antigravity / Claude / Codex / IDEs)  (< 300 Token Cards)         (On-Demand Recall)
 ```
 
 ### Key Architectural Breakthroughs
@@ -56,11 +56,11 @@ CATalyst enforces a **strict read-only knowledge plane** (zero live `win32com` c
 
 ---
 
-## Compliance & Environment Isolation Policy
+## Local Setup & Environment Isolation
 
-- **BYOD (Bring Your Own Docs)**: This repository is MIT-licensed and **contains zero proprietary Dassault Systèmes binaries or derived databases** (`V5Automation.chm`, `dist/catalyst.db`, and `dist/local/catalyst_docs.db` are all `.gitignore`d). Every user initializes locally from their own licensed CATIA V5 installation.
-- **Isolated Virtual Environment by Default**: Always use `uv sync` / `uv run` (project-local `.venv/`). `build.py` and `build_docs.py` explicitly warn if invoked under global Python.
-- **Explicit Environment Disclosure**: Before reading local CATIA directories or saving machine-local roots (`dist/local/paths.json`), builders print all resolved paths and ask for confirmation in interactive terminals. Zero modifications are ever made to system `PATH`, Windows Registry, or CATIA installation directories.
+- **Local Database Initialization**: Core (`dist/catalyst.db`) and optional offline docs (`dist/local/catalyst_docs.db`) databases are built locally from your machine's CATIA V5 documentation and kept out of Git via `.gitignore`.
+- **Isolated Virtual Environment by Default**: Always use `uv sync` / `uv run` (project-local `.venv/`). `build.py` and `build_docs.py` warn if invoked under global Python.
+- **Zero System Side-Effects**: Builders print resolved paths before reading local CATIA folders and never modify system `PATH`, Windows Registry, or CATIA installation directories.
 
 ---
 
@@ -68,11 +68,38 @@ CATalyst enforces a **strict read-only knowledge plane** (zero live `win32com` c
 
 ### Requirements
 
-- Python 3.10+
-- [uv](https://docs.astral.sh/uv/) (manages the project-local `.venv/` automatically)
-- A licensed local CATIA V5 installation (`V5Automation.chm`, and optionally `Bxxdoc` + `Bxx/win_b64` for the offline docs extension).
+| Dependency | Requirement | Notes |
+| :--- | :--- | :--- |
+| **Python 3.10+** & **[uv](https://docs.astral.sh/uv/)** | Required | Manages the project-local `.venv/` automatically (all dependencies ship pre-built wheels; no C++ compiler needed). |
+| **[7-Zip (`7z`)](https://www.7-zip.org/)** | **Strongly Recommended** (Required on Linux/macOS to unpack `.chm`) | Fastest, space-in-path safe CHM unpacker (`winget install 7zip.7zip` / `brew install p7zip` / `sudo apt install p7zip-full`). If missing on Windows, the installer asks you whether to exit and install 7-Zip, specify a local `7z.exe`, or explicitly continue with Windows `hh.exe` (`--use-hh`). |
+| **Local CATIA V5 Docs** | Required (`V5Automation.chm`) / Optional (`Bxxdoc`) | Auto-detected via `CATEnv` on Windows (release-aligned); if not found, the installer prompts you to enter or drag-and-drop the path (supports spaces and `/` or `\`). |
 
-### 1. Create Isolated Virtual Environment
+### One-Click Installation (Recommended)
+
+A single command syncs `.venv`, verifies 7-Zip (or asks your choice), auto-discovers or prompts for `V5Automation.chm` and optional release-aligned `Bxxdoc`, builds the local SQLite database(s), safely merges `mcpServers.catalyst` into your MCP client config (with `.bak` backup), and runs end-to-end verification:
+
+```powershell
+# Windows (PowerShell)
+git clone https://github.com/zedeeee/CATalyst.git
+cd CATalyst
+.\install.ps1
+# If PowerShell blocks local scripts (Restricted ExecutionPolicy):
+# powershell -ExecutionPolicy Bypass -File .\install.ps1
+
+# Common options:
+# .\install.ps1 --chm "D:\Dassault\B27\win_b64\code\bin\V5Automation.chm"
+# .\install.ps1 --client claude     # Built-in presets: antigravity (default), claude, cursor; or --config <path> for Codex / other MCP agents & IDEs
+# .\install.ps1 --yes               # Non-interactive (add --use-hh on Windows if 7-Zip is not installed)
+```
+
+```bash
+# macOS / Linux (requires p7zip/7z to unpack CHM, or reuse a pre-built dist/catalyst.db)
+./install.sh
+```
+
+### Manual Step-by-Step Setup
+
+#### 1. Create Isolated Virtual Environment
 
 ```bash
 git clone https://github.com/zedeeee/CATalyst.git
@@ -80,9 +107,9 @@ cd CATalyst
 uv sync --extra dev
 ```
 
-### 2. Initialize Core API Database (`dist/catalyst.db`, Required)
+#### 2. Initialize Core API Database (`dist/catalyst.db`, Required)
 
-`build.py` automatically discovers your licensed `V5Automation.chm` via Dassault `CATEnv` (`<CATInstallPath>/code/bin/V5Automation.chm`), displays all detected paths for confirmation, and builds `dist/catalyst.db` locally (pass `--chm` if installed in a custom location, or `--with-docs` to build both databases in one step):
+`build.py` automatically discovers local `V5Automation.chm` via `CATEnv` (`<CATInstallPath>/code/bin/V5Automation.chm`), displays detected paths for confirmation, and builds `dist/catalyst.db` locally (pass `--chm` for custom locations, `--use-hh` on Windows without 7-Zip, or `--with-docs` to build both databases together):
 
 ```bash
 # Auto-detect V5Automation.chm via CATEnv (interactive confirmation before build)
@@ -93,7 +120,7 @@ uv run python build.py --chm "D:/Dassault/B27/win_b64/code/bin/V5Automation.chm"
 uv run python build.py --with-docs
 ```
 
-### 3. Build Local Offline Docs Extension (`dist/local/catalyst_docs.db`, Optional)
+#### 3. Build Local Offline Docs Extension (`dist/local/catalyst_docs.db`, Optional)
 
 Run once against your version-aligned local CATIA documentation and install directory (pass top-level `Bxxdoc` / `Bxx` folders; paths are normalized automatically and never hardcoded into the resulting DB):
 
@@ -104,7 +131,7 @@ uv run python build_docs.py \
   --release B27
 ```
 
-- Output defaults to `dist/local/catalyst_docs.db` (ignored by `.gitignore` to prevent committing commercial Dassault assets).
+- Output defaults to `dist/local/catalyst_docs.db` (ignored by `.gitignore`).
 - Supports `--modules cceug_C2,bascuctg_C2` for targeted testing and `--workers N` for parallel tuning.
 
 #### Fresh Machine Path Auto-Discovery (5-Tier Precedence)
@@ -120,27 +147,38 @@ On a fresh machine, CATalyst resolves local CATIA doc/install roots in strict pr
 
 ## MCP Server Configuration
 
-Add CATalyst to your MCP client configuration (e.g., `~/.gemini/config/mcp_config.json` for Antigravity, or Claude Desktop / Cursor). Configure `CATALYST_DOC_ROOT` and `CATALYST_INSTALL_ROOT` once so all portable relative paths resolve to your machine's local files at runtime:
+Running `.\install.ps1` / `./install.sh` automatically registers `catalyst` in your MCP client config (Antigravity `~/.gemini/config/mcp_config.json`, Claude `claude_desktop_config.json`, Cursor `~/.cursor/mcp.json`, or any other MCP-compatible Agent / AI IDE such as Claude Code & Codex via `--config <path>`). For manual setup, use:
 
 ```json
 {
   "mcpServers": {
     "catalyst": {
       "command": "uv",
-      "args": ["run", "python", "-m", "src.mcp.server"],
-      "cwd": "<path-to-CATalyst>",
+      "args": [
+        "--directory",
+        "<path-to-CATalyst>",
+        "run",
+        "python",
+        "-m",
+        "src.mcp.server"
+      ],
       "env": {
-        "CATALYST_DOC_ROOT": "C:/Program Files/Dassault Systemes/B27doc",
-        "CATALYST_INSTALL_ROOT": "C:/Program Files/Dassault Systemes/B27"
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+        "CATALYST_INSTALL_ROOT": "C:\\Program Files\\Dassault Systemes\\B27",
+        "CATALYST_DOC_ROOT": "C:\\Program Files\\Dassault Systemes\\B27doc"
       }
     }
   }
 }
 ```
 
+> Use native path separators for your OS (e.g. `\\` in JSON on Windows, `/` on macOS/Linux). `CATALYST_DOC_ROOT` defaults to a local `Bxxdoc` directory (and is optional if you only use the 6 core COM API/Recipe tools). When reusing a pre-built `catalyst_docs.db` on another machine, you can swap the runtime prefix without rebuilding via `CATALYST_DOC_ROOT` or `uv run python build_docs.py --set-paths --doc-root <prefix>` (local directory preferred; optional SMB UNC or `http(s)://` base URL also supported).
+
 Optional environment overrides:
 - `CATALYST_DB_PATH`: Custom path to `catalyst.db`.
 - `CATALYST_DOCS_DB_PATH`: Custom path to a shared/relocated `catalyst_docs.db`.
+- `CATALYST_7Z_PATH`: Custom path to `7z`/`7za` executable.
 
 ---
 
@@ -193,19 +231,32 @@ CATalyst/
 ├── dist/
 │   ├── catalyst.db                 # Locally built core COM API + Recipes SQLite DB (.gitignore)
 │   └── local/                      # Local portable catalyst_docs.db & paths.json (.gitignore)
+├── docs/
+│   ├── architecture.md             # System architecture, schema, path discovery & troubleshooting
+│   └── tutorial.md                 # Hands-on CLI & MCP usage guide
 ├── src/
-│   ├── parser/                     # CHM HTML parser, inheritance tree, offline docs/CATNls/samples ETL
-│   ├── engine/                     # Thread-safe SQLite FTS5 engines (db.py, docs_db.py, search_grammar.py)
+│   ├── parser/                     # CHM unpacker (7z/hh), HTML parser, inheritance tree, offline docs ETL
+│   ├── engine/                     # Thread-safe SQLite FTS5 engines (db.py, docs_db.py, local_config.py)
 │   ├── mcp/                        # FastMCP / MCPServer exposing 10 tools (server.py)
 │   └── client/                     # Optional host diagnostics
-├── skills/                         # Agent Skill definitions
-├── tests/                          # Pytest suite (unit, FTS5, schema, portable relocation, MCP tests)
+├── skills/catalyst-query/          # Agent Skill definition (SKILL.md)
+├── tests/                          # Automated tests (engine, FTS5, schema, portability, installer, MCP)
+├── install.ps1 / install.sh        # One-click installers (Windows / macOS / Linux)
+├── install.py                      # Cross-platform installer & MCP registration engine
 ├── build.py                        # Core API DB builder + 8 smoke tests
 ├── build_docs.py                   # Offline docs/CATNls/samples extension builder + smoke tests
 ├── catalyst_cli.py                 # Symmetric CLI entrypoint
+├── AGENTS.md                       # AI agent ground-truth policy & deployment runbook
 ├── README.md                       # English documentation (default)
 └── README_CN.md                    # 简体中文文档
 ```
+
+## Documentation
+
+- [Architecture & Deployment Reference](docs/architecture.md)
+- [Hands-on Tutorial (CLI & MCP)](docs/tutorial.md)
+- [Community Recipes Contribution Guide](data/recipes/README.md)
+- [Agent Guidelines & Deployment Runbook](AGENTS.md)
 
 ---
 

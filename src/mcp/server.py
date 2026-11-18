@@ -47,12 +47,11 @@ def _core_db_missing_error() -> str:
         {
             "isError": True,
             "error": (
-                "Core API database (dist/catalyst.db) is not initialized. "
-                "CATalyst follows BYOD (Bring Your Own Docs) and does not bundle proprietary Dassault binaries. "
-                "Initialize locally inside the isolated project virtual environment:\n"
-                "  1) uv sync\n"
-                "  2) uv run python build.py  (auto-detects licensed V5Automation.chm via CATEnv, or pass --chm <path>)\n"
-                "  3) Optional offline docs: uv run python build_docs.py"
+                "Core API database (dist/catalyst.db) is not initialized yet. "
+                "Initialize it locally inside the isolated project virtual environment:\n"
+                "  - One-click (Windows): .\\install.ps1\n"
+                "  - One-click (macOS/Linux): ./install.sh\n"
+                "  - Or manual: uv sync && uv run python build.py"
             ),
         },
         ensure_ascii=False,

@@ -13,11 +13,14 @@ import re
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
+from urllib.parse import quote
 
 from src.engine.local_config import (
-    resolve_doc_root as _resolve_doc_root_5tier,
-    resolve_install_root as _resolve_install_root_5tier,
+    classify_location_scheme,
+    is_http_url,
+    resolve_doc_root_location as _resolve_doc_root_5tier,
+    resolve_install_root_location as _resolve_install_root_5tier,
 )
 from src.parser.docs_parser import BINARY_SAMPLE_EXTS
 
@@ -65,16 +68,56 @@ def resolve_docs_db_path(db_path: Optional[Union[str, Path]] = None) -> Optional
     return None
 
 
-def resolve_runtime_doc_root(meta: Dict[str, str]) -> Optional[Path]:
-    """5-tier dynamic doc root resolution (MCP env -> dist/local/paths.json -> CATEnv -> default)."""
+def _join_portable_rel(base: Path, rel_path: str) -> Path:
+    """Safely join a portable relative path (supporting '/' or '\\') onto a local OS base path."""
+    parts = [p for p in (rel_path or "").replace("\\", "/").split("/") if p and p != "."]
+    return base.joinpath(*parts) if parts else base
+
+
+def _join_portable_url(base_url: str, rel_path: str) -> str:
+    """Join a portable relative path onto an HTTP(S) base URL with safe per-segment encoding."""
+    parts = [quote(p, safe="") for p in (rel_path or "").replace("\\", "/").split("/") if p and p != "."]
+    clean_base = base_url.rstrip("/")
+    return f"{clean_base}/{'/'.join(parts)}" if parts else clean_base
+
+
+def _resolve_portable_target(
+    base_root: Optional[Union[Path, str]],
+    rel_path: str,
+) -> Tuple[Dict[str, str], bool]:
+    """
+    Resolve a portable relative path against a local Path, SMB UNC Path, or HTTP(S) base URL.
+    - HTTP(S) returns {'url': ...} without setting 'abs_path' (avoids misleading local file readers).
+    - Local / SMB returns {'abs_path': ...} when reachable, gracefully returning ({}, False) on OSError.
+    """
+    if not base_root:
+        return {}, False
+    if isinstance(base_root, str) and is_http_url(base_root):
+        return {"url": _join_portable_url(base_root, rel_path)}, True
+
+    cand = _join_portable_rel(Path(base_root), rel_path)
+    try:
+        if cand.exists():
+            return {"abs_path": str(cand)}, True
+    except OSError:
+        return {}, False
+    return {}, False
+
+
+def resolve_runtime_doc_root(meta: Dict[str, str]) -> Optional[Union[Path, str]]:
+    """5-tier dynamic doc root resolution (MCP env -> dist/local/paths.json -> CATEnv -> default).
+    Supports local directory (default), Samba UNC, or optional HTTP(S) base URL.
+    """
     return _resolve_doc_root_5tier(
         release_hint=meta.get("catia_release", ""),
         legacy_meta_path=meta.get("doc_root", ""),
     )
 
 
-def resolve_runtime_install_root(meta: Dict[str, str]) -> Optional[Path]:
-    """5-tier dynamic install root resolution (MCP env -> dist/local/paths.json -> CATEnv -> default)."""
+def resolve_runtime_install_root(meta: Dict[str, str]) -> Optional[Union[Path, str]]:
+    """5-tier dynamic install root resolution (MCP env -> dist/local/paths.json -> CATEnv -> default).
+    Supports local directory (default), Samba UNC, or optional HTTP(S) base URL.
+    """
     return _resolve_install_root_5tier(
         release_hint=meta.get("catia_release", ""),
         legacy_meta_path=meta.get("install_root", ""),
@@ -305,19 +348,25 @@ class CatalystDocsDB:
             body = f"{body[:max_chars]}\n\n... [truncated {omitted} chars; pass section=... or larger max_chars]"
             truncated = True
 
-        doc_root_path = resolve_runtime_doc_root(meta)
+        doc_root_loc = resolve_runtime_doc_root(meta)
+        doc_scheme = classify_location_scheme(doc_root_loc)
+        had_unreachable_target = False
 
-        def _attach_abs(rel_p: str) -> Dict[str, Any]:
+        def _attach_target(rel_p: str) -> Dict[str, Any]:
+            nonlocal had_unreachable_target
             entry: Dict[str, Any] = {"rel_path": rel_p}
-            if doc_root_path:
-                cand = doc_root_path / rel_p
-                if cand.exists():
-                    entry["abs_path"] = str(cand)
+            if doc_root_loc:
+                resolved_fields, ok = _resolve_portable_target(doc_root_loc, rel_p)
+                if ok:
+                    entry.update(resolved_fields)
+                else:
+                    had_unreachable_target = True
             return entry
 
         result: Dict[str, Any] = {
             "catia_release": meta.get("catia_release", "unknown"),
-            "doc_root_resolved": str(doc_root_path) if doc_root_path else None,
+            "doc_root_resolved": str(doc_root_loc) if doc_root_loc else None,
+            "doc_root_scheme": doc_scheme,
             "doc_id": row_dict["doc_id"],
             "title": row_dict["title"],
             "module": row_dict["module"],
@@ -335,20 +384,22 @@ class CatalystDocsDB:
             "body_text": body,
         }
 
-        if doc_root_path:
-            page_abs = doc_root_path / row_dict["doc_id"]
-            if page_abs.exists():
-                result["abs_path"] = str(page_abs)
+        if doc_root_loc:
+            page_fields, page_ok = _resolve_portable_target(doc_root_loc, row_dict["doc_id"])
+            if page_ok:
+                result.update(page_fields)
+            else:
+                had_unreachable_target = True
         else:
             result["path_setup_hint"] = (
-                "Local CATIA doc root not configured on this machine (abs_path omitted). "
+                "CATIA doc root not configured on this machine (abs_path/url omitted). "
                 "Set CATALYST_DOC_ROOT in MCP env or run `uv run python build_docs.py --set-paths` "
-                "to point to your local Bxxdoc directory."
+                "to point to your local Bxxdoc directory (or optional SMB/HTTP prefix)."
             )
 
         if include_images:
             raw_imgs = json.loads(row_dict.get("images_json") or "[]")
-            result["images"] = [_attach_abs(rel_img) for rel_img in raw_imgs]
+            result["images"] = [_attach_target(rel_img) for rel_img in raw_imgs]
 
         raw_linked_docs = json.loads(row_dict.get("linked_docs_json") or "[]")
         if raw_linked_docs:
@@ -358,12 +409,18 @@ class CatalystDocsDB:
         if raw_linked_files:
             resolved_files = []
             for rf in raw_linked_files:
-                item = _attach_abs(rf)
+                item = _attach_target(rf)
                 ext = Path(rf).suffix.lower()
                 item["ext"] = ext
                 item["is_binary"] = ext in BINARY_SAMPLE_EXTS
                 resolved_files.append(item)
             result["linked_files"] = resolved_files
+
+        if doc_root_loc and had_unreachable_target and doc_scheme in ("local", "smb"):
+            result["path_unreachable_hint"] = (
+                f"Configured doc root ({doc_root_loc}) is currently unreachable or missing some assets; "
+                "full-text content from catalyst_docs.db remains available."
+            )
 
         return result
 
@@ -547,8 +604,11 @@ class CatalystDocsDB:
         cur.execute(sql, params)
         rows = cur.fetchall()
 
-        doc_root_path = resolve_runtime_doc_root(meta)
-        install_root_path = resolve_runtime_install_root(meta)
+        doc_root_loc = resolve_runtime_doc_root(meta)
+        install_root_loc = resolve_runtime_install_root(meta)
+        doc_scheme = classify_location_scheme(doc_root_loc)
+        install_scheme = classify_location_scheme(install_root_loc)
+        had_unreachable = False
 
         results: List[Dict[str, Any]] = []
         for r in rows:
@@ -566,12 +626,14 @@ class CatalystDocsDB:
                 "is_binary": is_bin,
             }
 
-            # Dynamically resolve local absolute path from configured MCP roots
-            base_root = doc_root_path if rd["source"] == "doc_samples" else install_root_path
+            # Dynamically resolve local/SMB abs_path or HTTP(S) url from configured roots
+            base_root = doc_root_loc if rd["source"] == "doc_samples" else install_root_loc
             if base_root:
-                cand = base_root / rel_path
-                if cand.exists():
-                    item["abs_path"] = str(cand)
+                resolved_fields, ok = _resolve_portable_target(base_root, rel_path)
+                if ok:
+                    item.update(resolved_fields)
+                else:
+                    had_unreachable = True
 
             if not is_bin:
                 if include_content:
@@ -586,16 +648,23 @@ class CatalystDocsDB:
 
         out: Dict[str, Any] = {
             "catia_release": meta.get("catia_release", "unknown"),
-            "doc_root_resolved": str(doc_root_path) if doc_root_path else None,
-            "install_root_resolved": str(install_root_path) if install_root_path else None,
+            "doc_root_resolved": str(doc_root_loc) if doc_root_loc else None,
+            "doc_root_scheme": doc_scheme,
+            "install_root_resolved": str(install_root_loc) if install_root_loc else None,
+            "install_root_scheme": install_scheme,
             "query": q,
             "total_matches": len(results),
             "results": results,
         }
-        if not doc_root_path and not install_root_path:
+        if not doc_root_loc and not install_root_loc:
             out["path_setup_hint"] = (
-                "Local CATIA doc/install roots not configured on this machine (abs_path omitted). "
+                "CATIA doc/install roots not configured on this machine (abs_path/url omitted). "
                 "Set CATALYST_DOC_ROOT / CATALYST_INSTALL_ROOT in MCP env or save them via "
-                "`uv run python build_docs.py --set-paths`."
+                "`uv run python build_docs.py --set-paths` (supports local path, SMB UNC, or HTTP(S) URL)."
+            )
+        elif had_unreachable:
+            out["path_unreachable_hint"] = (
+                "One or more configured local/SMB roots are currently unreachable; "
+                "indexed sample metadata and text contents remain available."
             )
         return out

@@ -108,29 +108,35 @@ _MENTIONED_FILE_RE = re.compile(
 
 
 def normalize_doc_root(path: Optional[Path]) -> Optional[Path]:
-    """Allow passing either Bxxdoc, Bxxdoc/English, or Bxxdoc/English/online."""
+    """Allow passing either Bxxdoc, Bxxdoc/English, or Bxxdoc/English/online. Safe against unreachable SMB/UNC."""
     if not path:
         return None
     p = Path(path)
-    if not p.exists():
+    try:
+        if not p.exists():
+            return None
+        if (p / "English" / "online").is_dir():
+            return (p / "English" / "online").resolve()
+        if (p / "online").is_dir():
+            return (p / "online").resolve()
+        return p.resolve()
+    except OSError:
         return None
-    if (p / "English" / "online").is_dir():
-        return (p / "English" / "online").resolve()
-    if (p / "online").is_dir():
-        return (p / "online").resolve()
-    return p.resolve()
 
 
 def normalize_install_root(path: Optional[Path]) -> Optional[Path]:
-    """Allow passing either Bxx or Bxx/win_b64."""
+    """Allow passing either Bxx or Bxx/win_b64. Safe against unreachable SMB/UNC."""
     if not path:
         return None
     p = Path(path)
-    if not p.exists():
+    try:
+        if not p.exists():
+            return None
+        if (p / "win_b64").is_dir():
+            return (p / "win_b64").resolve()
+        return p.resolve()
+    except OSError:
         return None
-    if (p / "win_b64").is_dir():
-        return (p / "win_b64").resolve()
-    return p.resolve()
 
 
 def detect_release_from_path(path: Optional[Path]) -> str:
