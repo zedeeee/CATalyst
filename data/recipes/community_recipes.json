@@ -185,5 +185,22 @@
     },
     "description": "按标准件生命周期分三模入库：1) 不可改参固定成品（电机/接插件）直接普通 .CATPart 入库，装配共享只读母件；2) 纯离散规格件（螺栓/轴承）用 Unresolved Part Family + 唯一 PartNumber 列，ResolvedComponentsMode=0 时自动按 New from 生成独立件；3) 入装配后仍需改工况自由度的参数化模板（如弹簧角度/脚长）必须走 PKT Document Template + Save in catalog（GUI-only 无创建 COM API），双击填参生成全新 UUID 实例且保留内部公式与发布元素。",
     "code": "import win32com.client\n\ndef select_catalog_storage_mode(tunable_after_insert: bool, table_driven_specs: bool) -> str:\n    # Mode 3: Tunable parametric template -> PKT Document Template + Save in catalog (GUI-only creation)\n    if tunable_after_insert:\n        return 'PKT_DOCUMENT_TEMPLATE'\n    # Mode 2: Pure discrete spec table -> Unresolved Part Family (ResolvedComponentsMode=0 -> New from)\n    if table_driven_specs:\n        return 'UNRESOLVED_PART_FAMILY'\n    # Mode 1: Fixed bought/standard part -> Standard .CATPart component (shared read-only reference)\n    _ = win32com.client.Dispatch\n    return 'DIRECT_COMPONENT_REFERENCE'"
+  },
+  {
+    "interface_name": "Material",
+    "title": "材质库脱敏重构、PutIcon 目录契约注入与物理光学参数防伪校验",
+    "workbench": "Material",
+    "tags": "material,catmaterial,puticon,thumbnail,density,transparency,verification,anti-fake",
+    "provenance": {
+      "source_type": "official_verified",
+      "source_url": "https://www.3ds.com/support/documentation/",
+      "source_ref": "CATIA V5 CAAScdMatUseCases/importMaterialLibrarySource.htm + Live Forensic",
+      "author": "CATalyst Curated",
+      "license": "MIT",
+      "original_language": "Python",
+      "verified_date": "2026-11-24"
+    },
+    "description": "CATMaterial 材质库脱敏与重建的核心工业标准流程：1) Material.PutIcon 入参必须严格传递以反斜杠结尾的目录路径 (C:\\icons\\)，CATIA 底层会自动拼接 Material.Name + .jpg，传文件全路径必死 (E_FAIL)；2) 缩略图为静态流，前台双击保存会强制触发 OpenGL rebake，因此必须防御性校验物理参数（若材料名称为玻璃但密度=2710 或透明度=0 则判定为铝合金冒充造假并拦截报警）；3) 结构化剥离 On Error Resume Next，对 win32com 异常严格上抛。",
+    "code": "import os\nimport win32com.client\n\ndef create_and_verify_material(doc_mat, family_name: str, mat_name: str, icon_dir: str, density: float, transparency: float):\n    # 1. 物理光学一致性防伪检查（防止拿 6061 铝合金参数冒充玻璃导致 OpenGL rebake 穿帮）\n    if '玻璃' in mat_name or 'glass' in mat_name.lower():\n        if density > 2600.0 or transparency < 0.1:\n            raise ValueError(f'Physical parameter fake detected for {mat_name}: density={density}, transparency={transparency}')\n\n    # 2. 获取/创建家族与材质\n    families = doc_mat.Families\n    family = None\n    for i in range(1, families.Count + 1):\n        if families.Item(i).Name == family_name:\n            family = families.Item(i)\n            break\n    if family is None:\n        family = families.Add()\n        family.Name = family_name\n\n    mat = family.Materials.Add()\n    mat.Name = mat_name\n\n    # 3. PutIcon 目录契约：必须为目录路径且末尾带反斜杠，严禁传 .jpg 文件全路径\n    clean_icon_dir = os.path.normpath(icon_dir)\n    if not clean_icon_dir.endswith(os.sep):\n        clean_icon_dir += os.sep\n    mat.PutIcon(clean_icon_dir)\n\n    # 4. 注入物理分析与渲染数据\n    analysis_data = mat.CreateAnalysisData('SAMIsotropicMaterial')\n    analysis_data.SetValue('SAMDensity', density)\n    render_data = mat.CreateRenderingData()\n    render_data.Transparency = transparency\n    return mat"
   }
 ]

@@ -66,6 +66,7 @@ def _resolve_db_path(db_path: Optional[Union[str, Path]] = None) -> Path:
 
 
 from .search_grammar import get_search_grammar
+from .pitfalls import get_method_pitfall
 
 
 def _generate_python_method_hint(method_name: str, return_type: str, params: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
@@ -319,6 +320,10 @@ class CatalystDB:
             py_hints = _generate_python_method_hint(m_name, m["return_type"], params)
             if py_hints:
                 method_entry["python_mapping"] = py_hints
+
+            pitfall = get_method_pitfall(canonical_name, m_name)
+            if pitfall:
+                method_entry["pitfall_warning"] = pitfall
 
             interface_data["methods"].append(method_entry)
             
