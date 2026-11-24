@@ -32,7 +32,8 @@ CATalyst 采用**纯只读知识平面**设计（不耦合实时 `win32com` 会�
 | `build_docs.py` | 可选离线文档/设置/样板构建器与路径绑定工具（生成 `dist/local/catalyst_docs.db`） |
 | `catalyst_cli.py` | 与 MCP 10 工具完全对称的本地 CLI 入口 |
 | `src/parser/` | `chm_unpacker.py`、`html_parser.py`、`inheritance.py`、`usecase_parser.py`、`builder.py`、`docs_parser.py`、`docs_builder.py` |
-| `src/engine/` | `db.py`（核心库查询 + FTS5 + 配方热加载）、`docs_db.py`（离线文档查询 + 运行时动态还原本地路径）、`local_config.py`（5 级路径发现 + 跨平台路径解析）、`search_grammar.py` |
+| `src/engine/` | `db.py`（核心库查询 + FTS5 + 配方热加载）、`docs_db.py`（离线文档查询 + 运行时动态还原本地路径）、`pitfalls.py`（高危接口已知实现约束与避坑字典）、`linkage_builder.py`（官方源码/文档调用反向索引构建器）、`local_config.py`（5 级路径发现 + 跨平台路径解析）、`search_grammar.py` |
+| `src/tools/` | `linkage_diff_reporter.py`（官方文档/样板源码穿透覆盖率对比看板生成器） |
 | `src/mcp/server.py` | FastMCP / MCP Server，暴露 10 个只读工具 |
 | `skills/catalyst-query/SKILL.md` | 跨项目 Agent Skill 定义 |
 | `data/recipes/` | Git 托管的社区 `win32com` 配方 JSON 与贡献规范 |
@@ -53,6 +54,7 @@ CATalyst 采用**纯只读知识平面**设计（不耦合实时 `win32com` 会�
 - `doc_pages` + `doc_pages_fts`（External Content FTS5）：解析 `Bxxdoc/English/online/` HTML 页面、TOC 层级、`<a name="ix-...">` 索引词、警告框、`linked_docs`、`linked_files` 与图片相对路径。
 - `catnls_entries` + `catnls_fts`：解析 `win_b64/resources/msgcatalog/*.CATNls` UI 文本与选项键，支持 CamelCase 切词回退。
 - `samples` + `samples_fts`：文本样板存正文 + 相对路径；二进制 CAD 样板（`.CATPart`/`.CATProduct`/`.catalog` 等）仅索引元信息与相对路径。
+- `doc_api_links`：官方样板宏与 HTML 用例文档的 COM API 反向索引表（存储 `interface_name`, `member_name`, `target_type`, `ref_id`, `rel_path`, `line_no`, `code_snippet`, `official_note`；支持自愈按需构建）。在 `get_catia_interface` 查询时自动挂载，解冻孤儿接口实战代码。
 
 ---
 

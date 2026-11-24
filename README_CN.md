@@ -49,6 +49,8 @@ CATalyst 严格坚守**纯只读知识大脑定位**（不耦合任何活体 `wi
 ### 核心能力与突破
 
 - **零幻觉 COM API 真理源**：自动递归融合继承链（`Pad -> Prism -> SketchBasedShape -> Shape -> AnyObject`）并标注 `declared_in`；支持 Enum 双向反查、属性/方法反向查宿主接口、`Selection.Search` 精确语法，以及 `pywin32` `[out]` / `CATSafeArrayVariant` 调用提示。
+- **方法级调用约束与已知实现差异 (Known Implementation Caveats)**：针对达索底层实现与 IDL 声明存在契约背离的高危接口（如 `Material.PutIcon` 声明为 `iPath` 却强求以反斜杠结尾的目录路径导致 `E_FAIL`、批处理无头环境限制、文件独占锁死等），自动在接口卡片中挂载结构化 `pitfall_warning`、底层根因剖析与安全调用范式。
+- **官方源码与用例双向穿透引擎 (Doc & Sample Code Linkage)**：建立 2,415 个官方样板宏与 12,179 篇 HTML 的反向索引表，精准定位 14,473 处实战调用行号，解冻 82 个原零用例接口；`get_catia_interface` 自动输出关联的官方文档切片与带行号的脚本调用上下文。
 - **2.24 GB 官方离线手册秒级建库、亚 10ms 检索**：多进程 `lxml` 流水线数秒解析 12,500+ 页 HTML，原生榨干达索 `CATIA_P3_TOC.xml` 产品分类树、`<a name="ix-...">` 官方索引词、`<a name="ToolsOptions...">` 选项锚点、`awarning.gif` 官方避坑警告、页面间 `linked_docs` 跳转、`linked_files` 关联样板及有效截图；基于 SQLite FTS5 External Content Table（正文零双份冗余）+ BM25 列权重倾斜 + CamelCase 自动切词回退（搜 `FavoriteCatalog` 自动命中 `Favorite Catalog`）。
 - **100% 纯相对路径可移植库**：`catalyst_docs.db` **不写入任何机器绝对路径**（`portable_relative_paths: true`），内置 `catia_release` 版本水印（如 `B27`）。在任意机器只需于 MCP `env` 配置 `CATALYST_DOC_ROOT` / `CATALYST_INSTALL_ROOT`，运行时自动展开本机 `abs_path`——HTML 原页、有效截图（供多模态 Agent 按需 `read_file` 看图）、文本样板（`.csv`/`.CATScript`/`.xml`）及二进制 CAD 样板（`.CATPart`/`.CATProduct`/`.catalog`）全链路直达。
 - **真机实锤工业 Recipe 库**：内置多条经过 CATIA 内核实测验证的避坑配方（无头 `CNEXT -batch` 建 Catalog 避开空 `章节.1` 根坑、`CATBatGenXMLSet`/`CATBatImpXMLSet` `.CATSettings` XML 往返、`.txt` DesignTable 强制 CRLF 防静默失步、`Relation.Hidden` 封装与 `Product.Source`、Catalog 三模入库与 PKT `Document Template` 边界、STEP 批量导出、BOM/Inertia、Bounding Box、工程图 Title Block）。
@@ -186,7 +188,7 @@ uv run python build_docs.py \
 
 | 分类 | Tool | 职责 |
 | :--- | :--- | :--- |
-| **COM API** | `get_catia_interface` | 获取接口完整签名（含继承成员 `declared_in`）、`pywin32` `[out]` 解包提示与按成员过滤 |
+| **COM API** | `get_catia_interface` | 获取接口完整签名（含继承成员 `declared_in`）、`pywin32` `[out]` 解包提示、方法级实现约束 (`pitfall_warning`)，以及关联的官方文档与样板宏源码 (`linked_official_docs`, `linked_sample_scripts`) |
 | **COM API** | `search_catia_api` | FTS5 BM25 检索接口/枚举/属性/方法（附宿主接口反查与 0 命中文档引导） |
 | **COM API** | `get_catia_enum` | 枚举双向查询（按名称、数值索引或成员名反查） |
 | **COM API** | `get_catia_usecases` | 双轨查询官方 VBScript 示例与社区 Python `win32com` 实例 |

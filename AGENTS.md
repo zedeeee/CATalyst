@@ -6,6 +6,7 @@
   - **COM API / 枚举 / 社区配方**：必须通过本地 `dist/catalyst.db` 检索验证（MCP 工具：`get_catia_interface`、`search_catia_api`、`get_catia_enum`、`get_catia_usecases`、`search_catia_recipes`、`get_catia_search_syntax`；或 CLI `uv run python catalyst_cli.py ...`；或 `src/engine/db.py`）。
   - **非 COM 工程知识（`Tools > Options`、批处理参数、`CATNls`、官方样板）**：当 `dist/local/catalyst_docs.db` 已构建时，通过 `search_catia_docs`、`get_catia_doc_page`、`search_catia_settings`、`search_catia_samples` 检索验证。
 - **签名一致性**：属性/方法大小写、参数数量与方向（`in`/`out`/`inout`）、类型（如 `long`、`CATBSTR`、`CATSafeArrayVariant`）必须 100% 符合 `catalyst.db` 中的 IDL 规范；若库中查不到，直接说明该能力未在 CATIA V5 Automation 中暴露。
+- **底层实现约束遵守 (Respect Implementation Caveats)**：当调用 `get_catia_interface` 返回结果包含 `pitfall_warning` 时，必须严格遵循其载明的安全调用范式（`safe_pattern`）与参数格式约束（例如当接口表面声明为 `iPath: CATBSTR` 但约束标明底层强求包含反斜杠的目录路径时，严禁传入文件全路径）。
 
 ## 2. AI 快速部署 SOP (Deployment Runbook)
 当用户要求安装或部署本项目的 MCP 时，按最短路径执行：

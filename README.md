@@ -49,6 +49,8 @@ CATalyst enforces a **strict read-only knowledge plane** (zero live `win32com` c
 ### Key Architectural Breakthroughs
 
 - **Zero-Hallucination API Ground Truth**: Recursively fuses parent inheritance chains (`Pad -> Prism -> SketchBasedShape -> Shape -> AnyObject`), provides bidirectional enum lookup, reverse member-to-interface lookup, `Selection.Search` grammar, and `pywin32` `[out]` / `CATSafeArrayVariant` calling hints.
+- **Method-Level Calling Constraints & Caveats**: Identifies APIs where Dassault's underlying C++ implementation diverges from IDL declarations (e.g., `Material.PutIcon` declaring `iPath` but requiring a directory path ending with `\` to prevent `E_FAIL`). Emits structured `pitfall_warning` blocks with root-cause analysis and verified safe calling patterns.
+- **Official Sample Code & Doc Linkage Reverse Index**: Direct call-site mapping across 2,415 sample scripts and 12,179 doc pages, uncovering 14,473 real-world method calls and unfreezing 82 previously unreferenced interfaces with exact line-number context.
 - **2.24 GB Offline Docs Compressed to Sub-10ms FTS5**: Multiprocess `lxml` ETL parses 12,500+ HTML pages in seconds, extracts Dassault's native `CATIA_P3_TOC.xml` hierarchy, `<a name="ix-...">` index tags, `<a name="ToolsOptions...">` anchors, `awarning.gif` official pitfalls, `linked_docs` cross-references, `linked_files`, and content screenshots — stored via SQLite FTS5 External Content Tables (no duplicate text storage) with BM25 column weighting and CamelCase fallback (`FavoriteCatalog` -> `Favorite Catalog`).
 - **100% Portable Relative-Path Index**: `catalyst_docs.db` stores **zero machine-specific absolute paths** (`portable_relative_paths: true`) and carries a `catia_release` watermark (e.g., `B27`). Configure `CATALYST_DOC_ROOT` / `CATALYST_INSTALL_ROOT` in MCP `env` on any machine and CATalyst dynamically resolves local `abs_path` for HTML pages, embedded screenshots (for multimodal `read_file` inspection), text `.csv`/`.CATScript`/`.xml` samples, and binary `.CATPart`/`.CATProduct`/`.catalog` templates.
 - **Dual-Track Industrial Recipes**: Bundles kernel-verified `win32com` engineering recipes (headless `CNEXT -batch` Catalog creation, `CATBatGenXMLSet`/`CATBatImpXMLSet` `.CATSettings` XML round-trip, `.txt` DesignTable CRLF guard, `Relation.Hidden` encapsulation, Catalog 3-mode architecture, STEP batch export, BOM/Inertia, Bounding Box, Drafting Title Block).
@@ -186,7 +188,7 @@ Optional environment overrides:
 
 | Category | Tool | Purpose |
 | :--- | :--- | :--- |
-| **COM API** | `get_catia_interface` | Full interface signatures with inherited members (`declared_in`), `pywin32` `[out]` hints, and member-level filtering |
+| **COM API** | `get_catia_interface` | Full interface signatures with inherited members (`declared_in`), `pywin32` `[out]` hints, implementation caveats (`pitfall_warning`), and enriched official doc/sample linkages (`linked_official_docs`, `linked_sample_scripts`) |
 | **COM API** | `search_catia_api` | FTS5 BM25 search across interfaces, enums, properties, and methods (with reverse host lookup & 0-hit doc hint) |
 | **COM API** | `get_catia_enum` | Bidirectional enum lookup by enum name, integer value, or member name |
 | **COM API** | `get_catia_usecases` | Dual-track official VBScript tutorials + community Python `win32com` examples |
