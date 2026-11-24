@@ -256,6 +256,17 @@ def main() -> None:
     )
     summary = builder.build()
 
+    try:
+        from src.engine.linkage_builder import LinkageBuilder
+        linkage_res = LinkageBuilder(docs_db_path=summary["output_db"]).build_linkages()
+        logger.info(
+            f"Built {linkage_res['total_links']} official API code linkages "
+            f"({linkage_res['linked_interfaces']} interfaces, {linkage_res['linked_members']} members) "
+            f"in {linkage_res['elapsed_seconds']}s."
+        )
+    except Exception as e:
+        logger.warning(f"Linkage build step skipped or failed: {e}")
+
     if not args.skip_smoke_test and not only_modules:
         run_docs_smoke_test(Path(summary["output_db"]))
 

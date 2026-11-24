@@ -138,6 +138,22 @@ def get_catia_interface(
                 "error": f"Interface '{target_name}' not found in CATIA V5 documentation."
             }, ensure_ascii=False)
 
+        docs_db = get_docs_db()
+        if docs_db and isinstance(res, dict) and "name" in res:
+            try:
+                linkages = docs_db.get_api_linkages(
+                    res["name"],
+                    member_name=target_member if target_member else None,
+                    max_samples=max_usecases if max_usecases > 0 else 5,
+                    max_docs=max_usecases if max_usecases > 0 else 5,
+                )
+                if linkages.get("linked_official_docs"):
+                    res["linked_official_docs"] = linkages["linked_official_docs"]
+                if linkages.get("linked_sample_scripts"):
+                    res["linked_sample_scripts"] = linkages["linked_sample_scripts"]
+            except Exception as le:
+                logger.debug(f"Failed to enrich interface with docs linkages: {le}")
+
         return json.dumps(res, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.exception(f"Exception in get_catia_interface: {e}")

@@ -668,3 +668,118 @@ class CatalystDocsDB:
                 "indexed sample metadata and text contents remain available."
             )
         return out
+
+    def get_api_linkages(
+        self,
+        interface_name: str,
+        member_name: Optional[str] = None,
+        max_samples: int = 3,
+        max_docs: int = 3,
+    ) -> Dict[str, Any]:
+        """
+        Retrieves official sample scripts and documentation pages linked to this interface and/or member.
+        Features self-healing: automatically builds doc_api_links if missing.
+        """
+        if not interface_name:
+            return {"linked_official_docs": [], "linked_sample_scripts": []}
+
+        conn = self.conn
+        cur = conn.cursor()
+
+        # Check if doc_api_links exists; if missing, trigger self-healing builder
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='doc_api_links'")
+        if not cur.fetchone():
+            try:
+                from .linkage_builder import LinkageBuilder
+                builder = LinkageBuilder(docs_db_path=self.db_path)
+                builder.build_linkages()
+            except Exception as e:
+                logger.warning(f"Self-healing LinkageBuilder failed: {e}")
+                return {"linked_official_docs": [], "linked_sample_scripts": []}
+
+        canon_iface = interface_name.strip()
+        canon_member = member_name.strip() if member_name else None
+
+        meta = self.get_meta()
+        doc_root_loc = resolve_runtime_doc_root(meta)
+        install_root_loc = resolve_runtime_install_root(meta)
+
+        # 1. Fetch sample links
+        if canon_member:
+            cur.execute(
+                "SELECT ref_id, rel_path, title, line_no, code_snippet FROM doc_api_links "
+                "WHERE interface_name = ? COLLATE NOCASE AND member_name = ? COLLATE NOCASE AND target_type = 'sample' "
+                "ORDER BY line_no LIMIT ?",
+                (canon_iface, canon_member, max(1, max_samples)),
+            )
+        else:
+            cur.execute(
+                "SELECT ref_id, rel_path, title, line_no, code_snippet FROM doc_api_links "
+                "WHERE interface_name = ? COLLATE NOCASE AND target_type = 'sample' "
+                "ORDER BY member_name, line_no LIMIT ?",
+                (canon_iface, max(1, max_samples)),
+            )
+        sample_rows = cur.fetchall()
+
+        linked_samples = []
+        for row in sample_rows:
+            ref_id, rel_path = row["ref_id"], row["rel_path"]
+            title, line_no = row["title"], row["line_no"]
+            code_snippet = row["code_snippet"]
+            entry = {
+                "sample_id": ref_id,
+                "file": rel_path,
+                "filename": title or Path(rel_path).name,
+                "line_no": line_no,
+                "code_context": code_snippet,
+            }
+            base_root = doc_root_loc if "doc_samples" in rel_path or "online" in rel_path else install_root_loc
+            if base_root:
+                resolved_fields, ok = _resolve_portable_target(base_root, rel_path)
+                if ok:
+                    entry.update(resolved_fields)
+            linked_samples.append(entry)
+
+        # 2. Fetch doc links
+        if canon_member:
+            cur.execute(
+                "SELECT ref_id, rel_path, title, line_no, code_snippet, official_note FROM doc_api_links "
+                "WHERE interface_name = ? COLLATE NOCASE AND member_name = ? COLLATE NOCASE AND target_type = 'doc' "
+                "ORDER BY line_no LIMIT ?",
+                (canon_iface, canon_member, max(1, max_docs)),
+            )
+        else:
+            cur.execute(
+                "SELECT ref_id, rel_path, title, line_no, code_snippet, official_note FROM doc_api_links "
+                "WHERE interface_name = ? COLLATE NOCASE AND target_type = 'doc' "
+                "ORDER BY member_name, line_no LIMIT ?",
+                (canon_iface, max(1, max_docs)),
+            )
+        doc_rows = cur.fetchall()
+
+        linked_docs = []
+        for row in doc_rows:
+            ref_id, rel_path = row["ref_id"], row["rel_path"]
+            title, line_no = row["title"], row["line_no"]
+            code_snippet = row["code_snippet"]
+            official_note = row["official_note"]
+            entry = {
+                "doc_id": ref_id,
+                "rel_path": rel_path,
+                "title": title or ref_id,
+                "line_no": line_no,
+                "code_context": code_snippet,
+            }
+            if official_note:
+                entry["official_note"] = official_note
+            if doc_root_loc:
+                resolved_fields, ok = _resolve_portable_target(doc_root_loc, rel_path)
+                if ok:
+                    entry.update(resolved_fields)
+            linked_docs.append(entry)
+
+        return {
+            "linked_official_docs": linked_docs,
+            "linked_sample_scripts": linked_samples,
+        }
+
