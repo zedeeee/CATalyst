@@ -1,6 +1,7 @@
 """
 Doc & Sample Code Linkage Builder for CATalyst.
 Extracts method and property invocation linkages from official samples and documentation pages,
+using IDL return-type propagation across chained calls and prose-noise filtering,
 building a fast reverse-index table `doc_api_links` inside `catalyst_docs.db`.
 """
 
@@ -20,7 +21,63 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # Common COM variable prefixes in Dassault sample scripts
 _PREFIX_STRIP_RE = re.compile(r"^(?:o|my|the|curr|current|new|sub|target|active)", re.IGNORECASE)
 _DIM_VAR_RE = re.compile(r"\bDim\s+([A-Za-z0-9_]+)\s+As\s+([A-Za-z0-9_]+)\b", re.IGNORECASE)
-_METHOD_CALL_RE = re.compile(r"\b([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\b")
+_ASSIGN_RE = re.compile(
+    r"^\s*(?:Set\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$",
+    re.IGNORECASE,
+)
+_CHAIN_RE = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*(?:\s*(?:\([^()]*\))?\s*\.\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*\([^()]*\))?)+)"
+)
+_SEGMENT_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(?:\s*\(([^()]*)\))?")
+
+# Common file extensions & non-code dots to avoid mistaking prose/filenames for COM calls
+_NON_CODE_EXTENSIONS = {
+    "htm", "html", "txt", "csv", "xml", "jpg", "jpeg", "gif", "png", "bmp", "svg",
+    "catpart", "catproduct", "catmaterial", "catdrawing", "catscript", "catvbs", "catfct",
+    "catnls", "catsettings", "catprocess", "catanalysis", "catalog", "xls", "xlsx",
+    "doc", "docx", "pdf", "exe", "dll", "zip", "cgr", "igs", "iges", "stp", "step",
+    "stl", "vrml", "wrl", "bas", "cls", "frm", "py", "json", "md", "com", "org",
+}
+_PROSE_ABBREV_RE = re.compile(r"\b(?:e\.g|i\.e|vs|etc|fig|no|vol)\b", re.IGNORECASE)
+_CODE_LINE_HINT_RE = re.compile(
+    r"(?:^\s*(?:Set|Dim|Call|Sub|Function|For|If|While|Do|With|Select)\b|=|\([^\)]*\)|&)",
+    re.IGNORECASE,
+)
+
+# High-collision generic COM member names that must not bind blindly via Rule C unique lookup
+_AMBIGUOUS_MEMBERS = {
+    "name", "count", "item", "parent", "application", "add", "remove",
+    "get", "set", "value", "type", "open", "close", "save", "update",
+    "clear", "write", "read", "copy", "paste", "delete", "refresh",
+}
+
+# Specialized document-type literal hints inside Documents.Add("...") or .Open("....CATPart")
+_DOC_TYPE_LITERALS = {
+    "part": "PartDocument",
+    "product": "ProductDocument",
+    "drawing": "DrawingDocument",
+    "material": "MaterialDocument",
+    "catalogdocument": "CatalogDocument",
+    "analysis": "AnalysisDocument",
+    "process": "ProcessDocument",
+    "catpart": "PartDocument",
+    "catproduct": "ProductDocument",
+    "catdrawing": "DrawingDocument",
+    "catmaterial": "MaterialDocument",
+    "catalog": "CatalogDocument",
+    "catanalysis": "AnalysisDocument",
+}
+
+
+def _strip_inline_comment(line: str) -> str:
+    """Strip VBScript single-quote comment outside double quotes."""
+    in_quotes = False
+    for i, ch in enumerate(line):
+        if ch == '"':
+            in_quotes = not in_quotes
+        elif ch == "'" and not in_quotes:
+            return line[:i]
+    return line
 
 
 class LinkageBuilder:
@@ -38,6 +95,7 @@ class LinkageBuilder:
         Dict[str, str],                           # iface_lower -> canonical
         Dict[str, Set[str]],                      # member_lower -> set of canonical ifaces
         Dict[Tuple[str, str], str],               # (iface_lower, member_lower) -> canonical member
+        Dict[Tuple[str, str], str],               # (iface_lower, member_lower) -> return interface canonical
     ]:
         cur = core_conn.cursor()
         interfaces: Dict[str, str] = {}
@@ -46,18 +104,159 @@ class LinkageBuilder:
 
         member_to_ifaces: Dict[str, Set[str]] = {}
         canonical_members: Dict[Tuple[str, str], str] = {}
+        member_return_types: Dict[Tuple[str, str], str] = {}
 
-        for iface, m_name in cur.execute("SELECT interface_name, name FROM methods"):
-            canon_iface = interfaces.get(iface.lower(), iface)
-            member_to_ifaces.setdefault(m_name.lower(), set()).add(canon_iface)
-            canonical_members[(iface.lower(), m_name.lower())] = m_name
-
-        for iface, p_name in cur.execute("SELECT interface_name, name FROM properties"):
+        for iface, p_name, p_type in cur.execute("SELECT interface_name, name, type FROM properties"):
             canon_iface = interfaces.get(iface.lower(), iface)
             member_to_ifaces.setdefault(p_name.lower(), set()).add(canon_iface)
             canonical_members[(iface.lower(), p_name.lower())] = p_name
 
-        return interfaces, member_to_ifaces, canonical_members
+            # Refine Factory/Document properties whose property name matches concrete interface
+            refined = interfaces.get(p_name.lower())
+            base_ret = interfaces.get((p_type or "").lower())
+            if refined and base_ret and base_ret.lower() in ("factory", "document"):
+                member_return_types[(iface.lower(), p_name.lower())] = refined
+            elif base_ret:
+                member_return_types[(iface.lower(), p_name.lower())] = base_ret
+
+        for iface, m_name, r_type in cur.execute("SELECT interface_name, name, return_type FROM methods"):
+            canon_iface = interfaces.get(iface.lower(), iface)
+            member_to_ifaces.setdefault(m_name.lower(), set()).add(canon_iface)
+            canonical_members[(iface.lower(), m_name.lower())] = m_name
+            ret_canon = interfaces.get((r_type or "").lower())
+            if ret_canon:
+                member_return_types[(iface.lower(), m_name.lower())] = ret_canon
+
+        return interfaces, member_to_ifaces, canonical_members, member_return_types
+
+    @staticmethod
+    def _infer_doc_subtype_from_args(args_text: Optional[str]) -> Optional[str]:
+        if not args_text:
+            return None
+        low = args_text.lower()
+        for key, doc_iface in _DOC_TYPE_LITERALS.items():
+            if key in low:
+                return doc_iface
+        return None
+
+    def _scan_lines(
+        self,
+        lines: List[str],
+        interfaces: Dict[str, str],
+        member_to_ifaces: Dict[str, Set[str]],
+        canonical_members: Dict[Tuple[str, str], str],
+        member_return_types: Dict[Tuple[str, str], str],
+        target_type: str,
+        ref_id: str,
+        rel_path: str,
+        title: str,
+        doc_note: Optional[str],
+        seen_links: Set[Tuple[str, str, str, str, int]],
+        links_out: List[Tuple[str, str, str, str, str, str, int, str, Optional[str]]],
+        require_code_hint: bool = False,
+    ) -> None:
+        var_types: Dict[str, str] = {"catia": "Application"} if "application" in interfaces else {}
+
+        # Pre-collect explicit Dim variable declarations across the block
+        for raw_line in lines:
+            m_dim = _DIM_VAR_RE.search(raw_line)
+            if m_dim:
+                v_name, type_name = m_dim.group(1).lower(), m_dim.group(2).lower()
+                if type_name in interfaces:
+                    var_types[v_name] = interfaces[type_name]
+
+        for idx, raw_line in enumerate(lines, start=1):
+            clean_line = raw_line.strip()
+            if not clean_line or clean_line.startswith("'") or clean_line.startswith("//"):
+                continue
+            if require_code_hint:
+                if clean_line.startswith("#") or not _CODE_LINE_HINT_RE.search(clean_line):
+                    continue
+                if _PROSE_ABBREV_RE.search(clean_line):
+                    continue
+
+            code_part = _strip_inline_comment(clean_line)
+            if not code_part.strip():
+                continue
+
+            # Track assignment RHS type propagation first so sequential lines benefit
+            assigned_lhs: Optional[str] = None
+            eval_target = code_part
+            m_assign = _ASSIGN_RE.match(code_part)
+            if m_assign:
+                assigned_lhs = m_assign.group(1).lower()
+                eval_target = m_assign.group(2)
+
+            last_chain_type: Optional[str] = None
+
+            for m_chain in _CHAIN_RE.finditer(eval_target):
+                chain_str = m_chain.group(1)
+                segments = _SEGMENT_RE.findall(chain_str)
+                if len(segments) < 2:
+                    continue
+
+                base_name, _ = segments[0]
+                base_low = base_name.lower()
+
+                # Resolve initial object type of the chain root
+                curr_iface: Optional[str] = var_types.get(base_low)
+                if not curr_iface:
+                    stripped = _PREFIX_STRIP_RE.sub("", base_low)
+                    if stripped in interfaces:
+                        curr_iface = interfaces[stripped]
+
+                for seg_name, seg_args in segments[1:]:
+                    seg_low = seg_name.lower()
+                    if seg_low in _NON_CODE_EXTENSIONS:
+                        curr_iface = None
+                        break
+
+                    target_ifaces = member_to_ifaces.get(seg_low)
+                    if not target_ifaces:
+                        curr_iface = None
+                        continue
+
+                    matched_iface: Optional[str] = None
+                    if curr_iface and curr_iface in target_ifaces:
+                        matched_iface = curr_iface
+                    elif not curr_iface and len(target_ifaces) == 1 and seg_low not in _AMBIGUOUS_MEMBERS:
+                        matched_iface = next(iter(target_ifaces))
+
+                    if matched_iface:
+                        canon_member = canonical_members.get((matched_iface.lower(), seg_low), seg_name)
+                        link_key = (matched_iface, canon_member, target_type, ref_id, idx)
+                        if link_key not in seen_links:
+                            seen_links.add(link_key)
+                            links_out.append((
+                                matched_iface,
+                                canon_member,
+                                target_type,
+                                ref_id,
+                                rel_path,
+                                title,
+                                idx,
+                                clean_line[:400],
+                                doc_note[:300] if doc_note else None,
+                            ))
+
+                        # Advance current type via return-type propagation
+                        next_type = member_return_types.get((matched_iface.lower(), seg_low))
+                        if next_type == "Document" and seg_low in ("add", "open", "newfrom", "item"):
+                            sub_doc = self._infer_doc_subtype_from_args(seg_args)
+                            if sub_doc and sub_doc.lower() in interfaces:
+                                next_type = interfaces[sub_doc.lower()]
+                        curr_iface = next_type
+                    else:
+                        curr_iface = None
+
+                if curr_iface:
+                    last_chain_type = curr_iface
+
+            # Propagate resolved RHS type to LHS variable if LHS wasn't strongly Dim'd to a concrete subtype
+            if assigned_lhs and last_chain_type:
+                existing = var_types.get(assigned_lhs)
+                if not existing or existing in ("Document", "Factory", "AnyObject", "CATBaseDispatch"):
+                    var_types[assigned_lhs] = last_chain_type
 
     def build_linkages(self) -> Dict[str, Any]:
         """
@@ -70,13 +269,12 @@ class LinkageBuilder:
             raise FileNotFoundError(f"Docs DB not found at {self.docs_db_path}")
 
         core_conn = sqlite3.connect(str(self.core_db_path))
-        interfaces, member_to_ifaces, canonical_members = self._load_core_catalogue(core_conn)
+        interfaces, member_to_ifaces, canonical_members, member_return_types = self._load_core_catalogue(core_conn)
         core_conn.close()
 
         docs_conn = sqlite3.connect(str(self.docs_db_path))
         cur = docs_conn.cursor()
 
-        # Initialize schema
         cur.executescript("""
             DROP TABLE IF EXISTS doc_api_links;
             CREATE TABLE doc_api_links (
@@ -98,148 +296,51 @@ class LinkageBuilder:
         links_to_insert: List[Tuple[str, str, str, str, str, str, int, str, Optional[str]]] = []
         seen_links: Set[Tuple[str, str, str, str, int]] = set()
 
-        # 1. Scan doc_samples (text-based scripts: CATScript, catvbs, bas, etc.)
+        # 1. Scan doc_samples (pure script files: CATScript, catvbs, bas, etc.)
         cur.execute(
             "SELECT sample_id, rel_path, filename, content FROM doc_samples "
             "WHERE is_binary = 0 AND content IS NOT NULL AND length(content) > 0"
         )
-        sample_rows = cur.fetchall()
+        for sample_id, rel_path, filename, content in cur.fetchall():
+            self._scan_lines(
+                lines=content.splitlines(),
+                interfaces=interfaces,
+                member_to_ifaces=member_to_ifaces,
+                canonical_members=canonical_members,
+                member_return_types=member_return_types,
+                target_type="sample",
+                ref_id=sample_id,
+                rel_path=rel_path,
+                title=filename,
+                doc_note=None,
+                seen_links=seen_links,
+                links_out=links_to_insert,
+                require_code_hint=False,
+            )
 
-        for sample_id, rel_path, filename, content in sample_rows:
-            lines = content.splitlines()
-            var_types: Dict[str, str] = {}
-
-            # First pass: type declarations
-            for line in lines:
-                m_dim = _DIM_VAR_RE.search(line)
-                if m_dim:
-                    v_name, type_name = m_dim.group(1).lower(), m_dim.group(2).lower()
-                    if type_name in interfaces:
-                        var_types[v_name] = interfaces[type_name]
-
-            # Second pass: method and property calls
-            for idx, raw_line in enumerate(lines, start=1):
-                clean_line = raw_line.strip()
-                if not clean_line or clean_line.startswith("'") or clean_line.startswith("//"):
-                    continue
-
-                for m_call in _METHOD_CALL_RE.finditer(clean_line):
-                    var_name, member_name = m_call.group(1), m_call.group(2)
-                    var_lower = var_name.lower()
-                    member_lower = member_name.lower()
-
-                    target_ifaces = member_to_ifaces.get(member_lower)
-                    if not target_ifaces:
-                        continue
-
-                    matched_iface: Optional[str] = None
-                    # Rule A: Explicit variable type
-                    if var_lower in var_types:
-                        cand = var_types[var_lower]
-                        if cand in target_ifaces:
-                            matched_iface = cand
-
-                    # Rule B: Heuristic prefix match (e.g. oMaterial -> Material, partDoc -> PartDocument)
-                    if not matched_iface:
-                        stripped_var = _PREFIX_STRIP_RE.sub("", var_lower)
-                        if stripped_var in interfaces:
-                            cand = interfaces[stripped_var]
-                            if cand in target_ifaces:
-                                matched_iface = cand
-
-                    # Rule C: Member is unique to exactly one interface
-                    if not matched_iface and len(target_ifaces) == 1:
-                        matched_iface = next(iter(target_ifaces))
-
-                    if matched_iface:
-                        canon_member = canonical_members.get((matched_iface.lower(), member_lower), member_name)
-                        link_key = (matched_iface, canon_member, "sample", sample_id, idx)
-                        if link_key not in seen_links:
-                            seen_links.add(link_key)
-                            links_to_insert.append((
-                                matched_iface,
-                                canon_member,
-                                "sample",
-                                sample_id,
-                                rel_path,
-                                filename,
-                                idx,
-                                clean_line[:400],
-                                None,
-                            ))
-
-        # 2. Scan doc_pages (official HTML use cases & code blocks)
+        # 2. Scan doc_pages (HTML documentation with prose-noise filter enabled)
         cur.execute(
             "SELECT doc_id, title, summary, warnings, body_text FROM doc_pages "
             "WHERE body_text IS NOT NULL AND length(body_text) > 0"
         )
-        doc_rows = cur.fetchall()
+        for doc_id, title, summary, warnings, body_text in cur.fetchall():
+            doc_note = (warnings or "").strip() or (summary or "").strip() or None
+            self._scan_lines(
+                lines=body_text.splitlines(),
+                interfaces=interfaces,
+                member_to_ifaces=member_to_ifaces,
+                canonical_members=canonical_members,
+                member_return_types=member_return_types,
+                target_type="doc",
+                ref_id=doc_id,
+                rel_path=doc_id,
+                title=title or doc_id,
+                doc_note=doc_note,
+                seen_links=seen_links,
+                links_out=links_to_insert,
+                require_code_hint=True,
+            )
 
-        for doc_id, title, summary, warnings, body_text in doc_rows:
-            # Focus on code blocks or automation usecase documents
-            lines = body_text.splitlines()
-            var_types = {}
-
-            # Gather doc-level note/warning if available
-            doc_note = (warnings or "").strip()
-            if not doc_note and summary:
-                doc_note = summary.strip()
-
-            for line in lines:
-                m_dim = _DIM_VAR_RE.search(line)
-                if m_dim:
-                    v_name, type_name = m_dim.group(1).lower(), m_dim.group(2).lower()
-                    if type_name in interfaces:
-                        var_types[v_name] = interfaces[type_name]
-
-            for idx, raw_line in enumerate(lines, start=1):
-                clean_line = raw_line.strip()
-                if not clean_line or clean_line.startswith("'") or clean_line.startswith("#"):
-                    continue
-
-                for m_call in _METHOD_CALL_RE.finditer(clean_line):
-                    var_name, member_name = m_call.group(1), m_call.group(2)
-                    var_lower = var_name.lower()
-                    member_lower = member_name.lower()
-
-                    target_ifaces = member_to_ifaces.get(member_lower)
-                    if not target_ifaces:
-                        continue
-
-                    matched_iface = None
-                    if var_lower in var_types:
-                        cand = var_types[var_lower]
-                        if cand in target_ifaces:
-                            matched_iface = cand
-
-                    if not matched_iface:
-                        stripped_var = _PREFIX_STRIP_RE.sub("", var_lower)
-                        if stripped_var in interfaces:
-                            cand = interfaces[stripped_var]
-                            if cand in target_ifaces:
-                                matched_iface = cand
-
-                    if not matched_iface and len(target_ifaces) == 1:
-                        matched_iface = next(iter(target_ifaces))
-
-                    if matched_iface:
-                        canon_member = canonical_members.get((matched_iface.lower(), member_lower), member_name)
-                        link_key = (matched_iface, canon_member, "doc", doc_id, idx)
-                        if link_key not in seen_links:
-                            seen_links.add(link_key)
-                            links_to_insert.append((
-                                matched_iface,
-                                canon_member,
-                                "doc",
-                                doc_id,
-                                doc_id,
-                                title,
-                                idx,
-                                clean_line[:400],
-                                doc_note[:300] if doc_note else None,
-                            ))
-
-        # Batch insert into SQLite
         cur.executemany(
             "INSERT INTO doc_api_links ("
             "  interface_name, member_name, target_type, ref_id, rel_path, title, line_no, code_snippet, official_note"
@@ -248,7 +349,6 @@ class LinkageBuilder:
         )
         docs_conn.commit()
 
-        # Compute summary metrics
         cur.execute("SELECT COUNT(DISTINCT interface_name) FROM doc_api_links")
         linked_ifaces_count = cur.fetchone()[0]
 
@@ -272,3 +372,9 @@ class LinkageBuilder:
             "doc_links": doc_links_count,
             "elapsed_seconds": elapsed,
         }
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    res = LinkageBuilder().build_linkages()
+    print("Linkage rebuild complete:", res)

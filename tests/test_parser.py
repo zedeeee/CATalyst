@@ -73,13 +73,91 @@ def test_parse_interface(parser):
         assert data["properties"][0]["name"] == "FirstLimit"
         assert data["properties"][0]["type"] == "Limit"
         assert data["properties"][0]["readonly"] is True
+        assert "Returns the first limit." in data["properties"][0]["description"]
         
         assert len(data["methods"]) == 1
         assert data["methods"][0]["name"] == "SetDirection"
         assert data["methods"][0]["return_type"] == "void"
+        assert "Sets the direction." in data["methods"][0]["description"]
         assert len(data["methods"][0]["params"]) == 1
         assert data["methods"][0]["params"][0]["name"] == "iLine"
         assert data["methods"][0]["params"][0]["type"] == "Any"
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_parse_interface_member_docs_params_and_role(parser, tmp_path):
+    """Ensure <dl><dd>, Parameters:, Returns:, and Role descriptions are not dropped."""
+    html_content = """
+    <html><body>
+    <h1>SyntheticMaterial</h1>
+    <script>generatedFatherClass('interface_SyntheticMaterial_1','SyntheticMaterial','0');</script>
+    <b><i> Represents a synthetic material object.</i></b><br>
+    <b>Role</b>: Holds rendering and analysis properties for a CATMaterial library.<hr>
+    <a name="PutIcon"><dt>
+    <table><tr><td>o Sub <b>PutIcon</b>(<td><script>activateLink('CATBSTR','CATBSTR')</script> <td><tt>iPath</tt>)</table></dt>
+    <dl>
+      <dd>
+     Read the icon of a material from JPEG file.
+     The parameter is the path of the folder where the JPEG is going to be read
+     Ex : E:\\folder\\
+     <dl>
+       <dt><b>Parameters:</b>
+       <dd>
+         <dl>
+           <dt><tt>iPath</tt>
+           <dd>Folder path containing JPEG thumbnails.
+         </dl>
+       <dt><b>Returns:</b>
+       <dd>S_OK if succeeded, E_FAIL otherwise.
+     </dl>
+    </dl>
+    </body></html>
+    """
+    fw_dir = tmp_path / "CATMatInterfaces"
+    fw_dir.mkdir()
+    fp = fw_dir / "interface_SyntheticMaterial_1.htm"
+    fp.write_text(html_content, encoding="utf-8")
+
+    data = parser.parse_interface(fp)
+    assert "Represents a synthetic material object." in data["description"]
+    assert "Holds rendering and analysis properties" in data["description"]
+
+    assert len(data["methods"]) == 1
+    m = data["methods"][0]
+    assert m["name"] == "PutIcon"
+    assert "path of the folder" in m["description"]
+    assert "Ex : E:\\folder\\" in m["description"]
+    assert "S_OK if succeeded" in m["returns_desc"]
+    assert m["params"][0]["name"] == "iPath"
+    assert m["params"][0]["type"] == "CATBSTR"
+    assert "Folder path containing JPEG thumbnails." in m["params"][0]["description"]
+
+
+def test_parse_multiline_func_return_type(parser, tmp_path):
+    """Multi-row Func tables must capture the return type after ') As', not the first param type."""
+    html_content = """
+    <html><body>
+    <script>generatedFatherClass('interface_SyntheticShapeFactory_1','SyntheticShapeFactory','0');</script>
+    <b><i>Factory fixture.</i></b><hr>
+    <table><tr><td>o Func <b>AddNewPad</b>(<td><script type="text/javascript"> activateLink('Sketch','Sketch')</script> <td><tt>iSketch</tt>,<tr><td></td><td><script type="text/javascript"> activateLink('double','double')</script> <td><tt>iHeight</tt>) As <script type="text/javascript"> activateLink('Pad','Pad')</script> </table></dt>
+    <dl><dd>Creates and returns a new pad.</dl>
+    </body></html>
+    """
+    fw_dir = tmp_path / "PartInterfaces"
+    fw_dir.mkdir()
+    fp = fw_dir / "interface_SyntheticShapeFactory_1.htm"
+    fp.write_text(html_content, encoding="utf-8")
+
+    data = parser.parse_interface(fp)
+    assert len(data["methods"]) == 1
+    m = data["methods"][0]
+    assert m["name"] == "AddNewPad"
+    assert m["return_type"] == "Pad"
+    assert m["params"] == [
+        {"name": "iSketch", "type": "Sketch"},
+        {"name": "iHeight", "type": "double"},
+    ]
+
+
 

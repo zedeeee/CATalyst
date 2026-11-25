@@ -30,24 +30,25 @@ CATalyst 采用**纯只读知识平面**设计（不耦合实时 `win32com` 会�
 | `install.ps1` / `install.sh` / `install.py` | 一键安装入口（同步 `.venv`、检查 7z、探测/交互指定路径、建库、安全写入 MCP 配置、端到端自检） |
 | `build.py` | 核心 COM API 数据库构建器（生成 `dist/catalyst.db` + 8 项冒烟测试） |
 | `build_docs.py` | 可选离线文档/设置/样板构建器与路径绑定工具（生成 `dist/local/catalyst_docs.db`） |
-| `catalyst_cli.py` | 与 MCP 10 工具完全对称的本地 CLI 入口 |
-| `src/parser/` | `chm_unpacker.py`、`html_parser.py`、`inheritance.py`、`usecase_parser.py`、`builder.py`、`docs_parser.py`、`docs_builder.py` |
-| `src/engine/` | `db.py`（核心库查询 + FTS5 + 配方热加载）、`docs_db.py`（离线文档查询 + 运行时动态还原本地路径）、`pitfalls.py`（高危接口已知实现约束与避坑字典）、`linkage_builder.py`（官方源码/文档调用反向索引构建器）、`local_config.py`（5 级路径发现 + 跨平台路径解析）、`search_grammar.py` |
+| `catalyst_cli.py` | 与 MCP 10 工具完全对称的本地 CLI 入口（含 `path` 对象导航子命令） |
+| `src/parser/` | `chm_unpacker.py`、`html_parser.py`（提取完整成员 `<dl><dd>` / `Parameters` / `Returns`）、`inheritance.py`、`usecase_parser.py`、`builder.py`、`docs_parser.py`、`docs_builder.py` |
+| `src/engine/` | `db.py`（核心库查询 + FTS5 驼峰/双语检索 + 双轨 Recipe FTS5）、`docs_db.py`、`object_graph.py`（COM 对象模型有向图与最短路径寻路）、`pitfalls.py`（热加载 `data/pitfalls.json`）、`caveat_miner.py`（静态约束挖掘）、`linkage_builder.py`（返回类型传播反向索引）、`synonyms.py`、`text_utils.py`、`local_config.py`、`search_grammar.py` |
 | `src/tools/` | `linkage_diff_reporter.py`（官方文档/样板源码穿透覆盖率对比看板生成器） |
 | `src/mcp/server.py` | FastMCP / MCP Server，暴露 10 个只读工具 |
 | `skills/catalyst-query/SKILL.md` | 跨项目 Agent Skill 定义 |
-| `data/recipes/` | Git 托管的社区 `win32com` 配方 JSON 与贡献规范 |
-| `tests/` | 单元测试（引擎、MCP、配方 Schema/AST、离线文档可移植性、安装器与解包器回归） |
+| `data/` | `data/pitfalls.json`（方法级调用约束规则）与 `data/recipes/*.json`（社区 `win32com` 配方） |
+| `tests/` | 单元测试、Golden Query `Recall@K`/`MRR` 基准、`real_db` 本地体检门禁与可选 `live_catia` 沙盒冒烟 |
 
 ---
 
 ## 2. 数据库核心 Schema
 
 ### 2.1 `dist/catalyst.db`（核心 COM API + 配方库）
-- `interfaces` / `properties` / `methods` / `enums` / `enum_values`：存储从 `V5Automation.chm` 提取并完成 `generatedFatherClass` 继承链融合的完整 IDL 元数据（保留 `declared_in` 标注来源父类）。
+- `interfaces` / `properties` / `methods` / `enums` / `enum_values`：存储从 `V5Automation.chm` 提取并完成 `generatedFatherClass` 继承链融合的完整 IDL 元数据与成员 `<dl><dd>`/`Parameters:`/`Returns:` 文档（保留 `declared_in`）。
+- `object_edges`：由属性/方法返回值及 `Document`/`Factory` 子类下转型派生出的 COM 对象有向图边表（~6,871 条边），驱动最短调用链寻路。
 - `usecases`：官方 VBScript 示例与导入的社区 Python 配方。
-- `apis_fts` / `usecases_fts`：SQLite FTS5 全文索引表（BM25 排序，不支持 FTS5 时优雅降级）。
-- `data/recipes/*.json`：运行时支持热加载，新增/编辑 JSON 无需重编数据库。
+- `apis_fts` / `usecases_fts`：SQLite FTS5 全文索引表（`apis_fts` 含 `camel_tokens` 拆词与 `is_inherited` 降权，按加权 `BM25` 排序）。
+- `data/recipes/*.json` & `data/pitfalls.json`：运行时支持基于 mtime 的热加载与内存 FTS5 索引。
 
 ### 2.2 `dist/local/catalyst_docs.db`（可选离线文档扩展库）
 - `metadata`：记录 `catia_release`（如 `B27`）、`portable_relative_paths = true`、页数/条目统计；**不存储任何本机绝对路径**。

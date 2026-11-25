@@ -1,0 +1,98 @@
+[
+  {
+    "id": "api_icon_camel_puticon",
+    "tool": "search_api",
+    "query": "Icon",
+    "item_type": "all",
+    "expected_any": ["Material.PutIcon", "Material.GetIcon"],
+    "top_k": 5
+  },
+  {
+    "id": "api_puticon_member_desc_folder",
+    "tool": "search_api",
+    "query": "folder JPEG",
+    "item_type": "method",
+    "expected_any": ["Material.PutIcon", "Material.GetIcon"],
+    "top_k": 5
+  },
+  {
+    "id": "api_application_not_drowned_top1",
+    "tool": "search_api",
+    "query": "Application",
+    "item_type": "all",
+    "expected_any": ["Application"],
+    "top_k": 1
+  },
+  {
+    "id": "api_pad_exact",
+    "tool": "search_api",
+    "query": "Pad",
+    "item_type": "interface",
+    "expected_any": ["Pad"],
+    "top_k": 1
+  },
+  {
+    "id": "api_part_number",
+    "tool": "search_api",
+    "query": "PartNumber",
+    "item_type": "property",
+    "expected_any": ["Product.PartNumber"],
+    "top_k": 3
+  },
+  {
+    "id": "api_direction_pad_context",
+    "tool": "search_api",
+    "query": "Pad Direction",
+    "item_type": "method",
+    "expected_any": ["Pad.GetDirection"],
+    "top_k": 5
+  },
+  {
+    "id": "api_getdirection_exact",
+    "tool": "search_api",
+    "query": "GetDirection",
+    "item_type": "method",
+    "expected_any": ["Prism.GetDirection", "Pad.GetDirection", "Measurable.GetDirection"],
+    "top_k": 5
+  },
+  {
+    "id": "api_servicepacknumber_redirects_to_servicepack",
+    "tool": "search_api",
+    "query": "ServicePackNumber",
+    "item_type": "all",
+    "expected_any": ["SystemConfiguration.ServicePack"],
+    "top_k": 3
+  },
+  {
+    "id": "recipe_material_non_starvation",
+    "tool": "search_recipes",
+    "query": "material",
+    "expected_any": ["Material"],
+    "require_community": true,
+    "top_k": 5
+  },
+  {
+    "id": "recipe_export_step",
+    "tool": "search_recipes",
+    "query": "export step",
+    "expected_any": ["Product"],
+    "require_community": true,
+    "top_k": 3
+  },
+  {
+    "id": "recipe_designtable_crlf",
+    "tool": "search_recipes",
+    "query": "DesignTable CRLF",
+    "expected_any": ["DesignTable"],
+    "require_community": true,
+    "top_k": 3
+  },
+  {
+    "id": "api_nonexistent_hallucination_guard",
+    "tool": "search_api",
+    "query": "NonExistentCatalystApiXYZ999",
+    "item_type": "all",
+    "expected_empty": true,
+    "top_k": 5
+  }
+]

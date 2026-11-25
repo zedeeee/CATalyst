@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "catalyst"
-version = "0.1.0"
+version = "0.3.0"
 description = "CATIA V5 Automation API Knowledge Base & AI Agent Toolkit"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,3 +36,7 @@ include = ["src*"]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-v"
+markers = [
+    "real_db: verification gate against locally built dist/catalyst.db and dist/local/catalyst_docs.db",
+    "live_catia: live Windows COM / headless CNEXT sandbox smoke verification (opt-in)",
+]

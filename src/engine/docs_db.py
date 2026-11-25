@@ -124,11 +124,8 @@ def resolve_runtime_install_root(meta: Dict[str, str]) -> Optional[Union[Path, s
     )
 
 
-def _split_camel_case(text: str) -> str:
-    """Split CamelCase identifiers (e.g. FavoriteCatalog -> Favorite Catalog) for FTS fallback."""
-    s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
-    s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", s)
-    return s
+from src.engine.text_utils import split_camel_case as _split_camel_case
+from src.engine.synonyms import expand_bilingual_queries
 
 
 def _format_fts_tokens(query: str, joiner: str = " AND ") -> str:
@@ -261,6 +258,20 @@ class CatalystDocsDB:
             if fts_or:
                 rows = _exec(fts_or)
                 fallback_used = bool(rows)
+        if not rows:
+            for alt_q in expand_bilingual_queries(query):
+                alt_fts = _format_fts_tokens(alt_q, joiner=" AND ")
+                if alt_fts:
+                    rows = _exec(alt_fts)
+                    if rows:
+                        fallback_used = True
+                        break
+                alt_or = _format_fts_tokens(alt_q, joiner=" OR ")
+                if alt_or and alt_or != alt_fts:
+                    rows = _exec(alt_or)
+                    if rows:
+                        fallback_used = True
+                        break
 
         results: List[Dict[str, Any]] = []
         for r in rows:
@@ -501,6 +512,25 @@ class CatalystDocsDB:
                         params,
                     )
                     nls_rows = cur.fetchall()
+                if not nls_rows:
+                    for alt_q in expand_bilingual_queries(q):
+                        alt_fts = _format_fts_tokens(alt_q, joiner=" OR ")
+                        if alt_fts:
+                            cur.execute(
+                                """
+                                SELECT c.file_stem, c.nls_key, c.text, c.is_option_file,
+                                       bm25(catnls_fts, 4.0, 6.0, 2.0) AS score
+                                FROM catnls_fts
+                                JOIN catnls_entries c ON c.id = catnls_fts.rowid
+                                WHERE catnls_fts MATCH ?
+                                ORDER BY score ASC
+                                LIMIT ?
+                                """,
+                                (alt_fts, clamped),
+                            )
+                            nls_rows = cur.fetchall()
+                            if nls_rows:
+                                break
 
         related_docs: List[Dict[str, Any]] = []
         doc_query = q or nf
