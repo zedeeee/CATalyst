@@ -124,11 +124,7 @@ def resolve_runtime_install_root(meta: Dict[str, str]) -> Optional[Union[Path, s
     )
 
 
-def _split_camel_case(text: str) -> str:
-    """Split CamelCase identifiers (e.g. FavoriteCatalog -> Favorite Catalog) for FTS fallback."""
-    s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
-    s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", s)
-    return s
+from src.engine.text_utils import split_camel_case as _split_camel_case
 
 
 def _format_fts_tokens(query: str, joiner: str = " AND ") -> str:

@@ -162,7 +162,7 @@ def get_search_grammar(
         wb_clean = workbench.strip().lower().replace(" ", "").replace("_", "")
         for key, data in SEARCH_WORKBENCHES.items():
             if wb_clean in key.lower() or wb_clean in data["prefix"].lower():
-                return {
+                res: Dict[str, Any] = {
                     "workbench": key,
                     "prefix": data["prefix"],
                     "description": data["description"],
@@ -179,6 +179,23 @@ def get_search_grammar(
                         f'print(f"Matched count: {{selection.Count}}")'
                     )
                 }
+                if query_type:
+                    qt_clean = query_type.strip().lower()
+                    matched = [
+                        {
+                            "workbench": key,
+                            "prefix": data["prefix"],
+                            "type": t["type"],
+                            "description": t["description"],
+                            "query_example": f"{data['prefix']}.{t['type']},all",
+                        }
+                        for t in data["types"]
+                        if qt_clean in t["type"].lower()
+                    ]
+                    res["matched_types"] = matched
+                    if matched:
+                        res["suggested_query"] = matched[0]["query_example"]
+                return res
 
     # If query_type specified
     if query_type:

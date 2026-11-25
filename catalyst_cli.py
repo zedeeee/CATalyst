@@ -34,12 +34,13 @@ def format_interface_markdown(data: dict) -> str:
     
     if data.get('properties'):
         md.append("## Properties")
-        md.append("| Name | Type | ReadOnly | Inherited From |")
-        md.append("|---|---|---|---|")
+        md.append("| Name | Type | ReadOnly | Inherited From | Description |")
+        md.append("|---|---|---|---|---|")
         for p in data['properties']:
             ro = "Yes" if p["readonly"] else "No"
             decl = p["declared_in"] if p["declared_in"] != data["name"] else "-"
-            md.append(f"| `{p['name']}` | `{p['type']}` | {ro} | `{decl}` |")
+            desc = (p.get("description") or "").replace("\n", " ")
+            md.append(f"| `{p['name']}` | `{p['type']}` | {ro} | `{decl}` | {desc} |")
         md.append("\n")
             
     if data.get('methods'):
@@ -49,6 +50,15 @@ def format_interface_markdown(data: dict) -> str:
             sig = f"{m['name']}({params_str}) -> {m['return_type']}"
             decl = f" *(Inherited from {m['declared_in']})*" if m['declared_in'] != data['name'] else ""
             md.append(f"### `{sig}`{decl}")
+            if m.get("description"):
+                md.append(f"> {m['description']}")
+            if m.get("returns_desc"):
+                md.append(f"> **Returns**: {m['returns_desc']}")
+            if m.get("pitfall_warning"):
+                pw = m["pitfall_warning"]
+                md.append(f"> **[CAVEAT - {pw.get('severity', 'WARN')}]** {pw.get('summary', '')}")
+                if pw.get("safe_pattern"):
+                    md.append(f"> **Safe Pattern**: `{pw['safe_pattern']}`")
             if m.get("python_mapping"):
                 py_map = m["python_mapping"]
                 if "pywin32_call" in py_map:

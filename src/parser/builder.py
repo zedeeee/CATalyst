@@ -18,6 +18,7 @@ except ImportError:
 from .html_parser import CatiaHtmlParser
 from .inheritance import InheritanceTree
 from .usecase_parser import UsecaseParser
+from src.engine.text_utils import expand_camel_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ class CatalystBuilder:
             )
         ''')
         
-        # Properties Table (Flattened with declared_in)
+        # Properties Table (Flattened with declared_in & member description)
         cursor.execute('''
             CREATE TABLE properties (
                 interface_name TEXT,
@@ -73,11 +74,12 @@ class CatalystBuilder:
                 type TEXT,
                 readonly BOOLEAN,
                 declared_in TEXT,
+                description TEXT DEFAULT '',
                 FOREIGN KEY(interface_name) REFERENCES interfaces(name)
             )
         ''')
         
-        # Methods Table (Flattened with declared_in)
+        # Methods Table (Flattened with declared_in & member documentation)
         cursor.execute('''
             CREATE TABLE methods (
                 interface_name TEXT,
@@ -85,6 +87,8 @@ class CatalystBuilder:
                 return_type TEXT,
                 params_json TEXT,
                 declared_in TEXT,
+                description TEXT DEFAULT '',
+                returns_desc TEXT DEFAULT '',
                 FOREIGN KEY(interface_name) REFERENCES interfaces(name)
             )
         ''')
@@ -134,12 +138,14 @@ class CatalystBuilder:
                 CREATE VIRTUAL TABLE apis_fts USING fts5(
                     item_type,
                     name,
+                    camel_tokens,
                     description,
                     framework,
                     parent_interface,
                     declared_in,
                     data_type,
                     readonly UNINDEXED,
+                    is_inherited UNINDEXED,
                     tokenize = 'unicode61'
                 )
             ''')
@@ -266,15 +272,32 @@ class CatalystBuilder:
             # Insert Fused Properties
             for p_name, p_data in fused_props.items():
                 cursor.execute(
-                    "INSERT INTO properties (interface_name, name, type, readonly, declared_in) VALUES (?, ?, ?, ?, ?)",
-                    (i_name, p_name, p_data["type"], p_data["readonly"], p_data["declared_in"])
+                    "INSERT INTO properties (interface_name, name, type, readonly, declared_in, description) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        i_name,
+                        p_name,
+                        p_data["type"],
+                        p_data["readonly"],
+                        p_data["declared_in"],
+                        p_data.get("description", ""),
+                    )
                 )
                 
             # Insert Fused Methods
             for m_name, m_data in fused_methods.items():
                 cursor.execute(
-                    "INSERT INTO methods (interface_name, name, return_type, params_json, declared_in) VALUES (?, ?, ?, ?, ?)",
-                    (i_name, m_name, m_data["return_type"], json.dumps(m_data["params"], ensure_ascii=False), m_data["declared_in"])
+                    "INSERT INTO methods (interface_name, name, return_type, params_json, declared_in, description, returns_desc) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        i_name,
+                        m_name,
+                        m_data["return_type"],
+                        json.dumps(m_data["params"], ensure_ascii=False),
+                        m_data["declared_in"],
+                        m_data.get("description", ""),
+                        m_data.get("returns_desc", ""),
+                    )
                 )
 
         self.conn.commit()
@@ -313,16 +336,38 @@ class CatalystBuilder:
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='apis_fts'")
             if cursor.fetchone():
                 cursor.execute("DELETE FROM apis_fts")
-                cursor.execute("""
-                    INSERT INTO apis_fts (item_type, name, description, framework, parent_interface, declared_in, data_type, readonly)
-                    SELECT 'interface', name, description, framework, '', name, '', 0 FROM interfaces
-                    UNION ALL
-                    SELECT 'enum', name, description, '', '', name, '', 0 FROM enums
-                    UNION ALL
-                    SELECT 'property', interface_name || '.' || name, '', '', interface_name, declared_in, type, readonly FROM properties
-                    UNION ALL
-                    SELECT 'method', interface_name || '.' || name, '', '', interface_name, declared_in, return_type, 0 FROM methods
-                """)
+                fts_rows = []
+                for name, desc, fw in cursor.execute(
+                    "SELECT name, COALESCE(description, ''), COALESCE(framework, '') FROM interfaces"
+                ).fetchall():
+                    fts_rows.append(("interface", name, expand_camel_tokens(name), desc, fw, "", name, "", 0, 0))
+
+                for name, desc in cursor.execute(
+                    "SELECT name, COALESCE(description, '') FROM enums"
+                ).fetchall():
+                    fts_rows.append(("enum", name, expand_camel_tokens(name), desc, "", "", name, "", 0, 0))
+
+                for iface, name, ptype, ro, decl, desc in cursor.execute(
+                    "SELECT interface_name, name, COALESCE(type, ''), readonly, COALESCE(declared_in, ''), COALESCE(description, '') FROM properties"
+                ).fetchall():
+                    full_name = f"{iface}.{name}"
+                    is_inh = 0 if (not decl or decl.lower() == iface.lower()) else 1
+                    fts_rows.append(("property", full_name, expand_camel_tokens(name), desc, "", iface, decl, ptype, ro, is_inh))
+
+                for iface, name, rtype, decl, desc, ret_desc in cursor.execute(
+                    "SELECT interface_name, name, COALESCE(return_type, ''), COALESCE(declared_in, ''), COALESCE(description, ''), COALESCE(returns_desc, '') FROM methods"
+                ).fetchall():
+                    full_name = f"{iface}.{name}"
+                    full_desc = f"{desc} {ret_desc}".strip()
+                    is_inh = 0 if (not decl or decl.lower() == iface.lower()) else 1
+                    fts_rows.append(("method", full_name, expand_camel_tokens(name), full_desc, "", iface, decl, rtype, 0, is_inh))
+
+                cursor.executemany(
+                    "INSERT INTO apis_fts ("
+                    "item_type, name, camel_tokens, description, framework, parent_interface, declared_in, data_type, readonly, is_inherited"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    fts_rows,
+                )
             self.conn.commit()
             logger.info("Successfully populated FTS5 full-text search indexes.")
         except Exception as e:

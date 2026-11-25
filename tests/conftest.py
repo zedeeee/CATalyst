@@ -13,11 +13,13 @@ from pathlib import Path
 
 import pytest
 
+from src.engine.text_utils import expand_camel_tokens
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def build_synthetic_core_db(db_path: Path) -> Path:
-    """Create a minimal 100% original synthetic SQLite DB matching CatalystDB schema."""
+    """Create a realistic 100% original synthetic SQLite DB with adversarial inheritance noise."""
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
     cur.executescript(
@@ -33,14 +35,17 @@ def build_synthetic_core_db(db_path: Path) -> Path:
             name TEXT,
             type TEXT,
             readonly BOOLEAN,
-            declared_in TEXT
+            declared_in TEXT,
+            description TEXT DEFAULT ''
         );
         CREATE TABLE methods (
             interface_name TEXT,
             name TEXT,
             return_type TEXT,
             params_json TEXT,
-            declared_in TEXT
+            declared_in TEXT,
+            description TEXT DEFAULT '',
+            returns_desc TEXT DEFAULT ''
         );
         CREATE TABLE enums (
             name TEXT PRIMARY KEY,
@@ -62,31 +67,62 @@ def build_synthetic_core_db(db_path: Path) -> Path:
             id UNINDEXED, interface_name, title, workbench, tags, context, code, tokenize='unicode61'
         );
         CREATE VIRTUAL TABLE apis_fts USING fts5(
-            item_type, name, description, framework, parent_interface, declared_in, data_type, readonly UNINDEXED, tokenize='unicode61'
+            item_type, name, camel_tokens, description, framework, parent_interface, declared_in, data_type,
+            readonly UNINDEXED, is_inherited UNINDEXED, tokenize='unicode61'
         );
         """
     )
 
     interfaces = [
-        ("Pad", "PartInterfaces", "Synthetic Pad interface fixture.", json.dumps(["Pad", "Prism", "SketchBasedShape", "Shape", "AnyObject"])),
-        ("Prism", "PartInterfaces", "Synthetic Prism interface fixture.", json.dumps(["Prism", "SketchBasedShape", "Shape", "AnyObject"])),
-        ("Product", "ProductStructureInterfaces", "Synthetic Product interface fixture.", json.dumps(["Product", "AnyObject"])),
-        ("VisPropertySet", "InfInterfaces", "Synthetic VisPropertySet interface fixture.", json.dumps(["VisPropertySet", "AnyObject"])),
-        ("SystemConfiguration", "InfInterfaces", "Synthetic SystemConfiguration fixture.", json.dumps(["SystemConfiguration", "AnyObject"])),
+        ("Application", "InfInterfaces", "Represents the root CATIA V5 Application object.", json.dumps(["Application", "AnyObject"])),
+        ("AnyObject", "InfInterfaces", "Represents the base object for all Automation interfaces.", json.dumps(["AnyObject"])),
+        ("Pad", "PartInterfaces", "Represents the pad extruded solid shape.", json.dumps(["Pad", "Prism", "SketchBasedShape", "Shape", "AnyObject"])),
+        ("Prism", "PartInterfaces", "Represents the prism shape.", json.dumps(["Prism", "SketchBasedShape", "Shape", "AnyObject"])),
+        ("PartDocument", "MecModInterfaces", "Represents a CATPart document.", json.dumps(["PartDocument", "Document", "AnyObject"])),
+        ("Part", "MecModInterfaces", "Represents the mechanical Part root.", json.dumps(["Part", "AnyObject"])),
+        ("Product", "ProductStructureInterfaces", "Represents an Assembly Product node.", json.dumps(["Product", "AnyObject"])),
+        ("VisPropertySet", "InfInterfaces", "Represents visual graphic properties.", json.dumps(["VisPropertySet", "AnyObject"])),
+        ("SystemConfiguration", "InfInterfaces", "Provides OS and CATIA release metadata.", json.dumps(["SystemConfiguration", "AnyObject"])),
+        ("MaterialDocument", "CATMatInterfaces", "Represents a CATMaterial library document.", json.dumps(["MaterialDocument", "Document", "AnyObject"])),
+        ("MaterialFamilies", "CATMatInterfaces", "Collection of material families.", json.dumps(["MaterialFamilies", "Collection", "AnyObject"])),
+        ("MaterialFamily", "CATMatInterfaces", "Represents a material family.", json.dumps(["MaterialFamily", "AnyObject"])),
+        ("Materials", "CATMatInterfaces", "Collection of materials inside a family.", json.dumps(["Materials", "Collection", "AnyObject"])),
+        ("Material", "CATMatInterfaces", "Represents a Material object.", json.dumps(["Material", "AnyObject"])),
+        ("RenderingMaterial", "CATRmaInterfaces", "Represents rendering optical properties of a material.", json.dumps(["RenderingMaterial", "AnyObject"])),
     ]
+    # Add 20 noisy subclass interfaces carrying inherited Application/Name properties
+    for idx in range(1, 21):
+        interfaces.append((
+            f"NoiseFeature{idx}",
+            "PartInterfaces",
+            f"Synthetic noise feature {idx} inheriting AnyObject.",
+            json.dumps([f"NoiseFeature{idx}", "AnyObject"]),
+        ))
     cur.executemany("INSERT INTO interfaces VALUES (?, ?, ?, ?)", interfaces)
 
     properties = [
-        ("Product", "PartNumber", "CATBSTR", 0, "Product"),
-        ("SystemConfiguration", "ServicePack", "long", 1, "SystemConfiguration"),
-        ("SystemConfiguration", "Release", "long", 1, "SystemConfiguration"),
+        ("Application", "ActiveDocument", "Document", 1, "Application", "Returns the current active document."),
+        ("Application", "Visible", "boolean", 0, "Application", "Sets or gets whether CATIA window is visible."),
+        ("AnyObject", "Application", "Application", 1, "AnyObject", "Returns the root Application."),
+        ("AnyObject", "Name", "CATBSTR", 0, "AnyObject", "Returns or sets the object name."),
+        ("PartDocument", "Part", "Part", 1, "PartDocument", "Returns the root Part inside the PartDocument."),
+        ("Product", "PartNumber", "CATBSTR", 0, "Product", "Returns or sets the product part number."),
+        ("SystemConfiguration", "ServicePack", "long", 1, "SystemConfiguration", "Returns service pack number."),
+        ("SystemConfiguration", "Release", "long", 1, "SystemConfiguration", "Returns CATIA release number."),
+        ("MaterialDocument", "Families", "MaterialFamilies", 1, "MaterialDocument", "Returns the collection of material families."),
+        ("MaterialFamily", "Materials", "Materials", 1, "MaterialFamily", "Returns the collection of materials."),
+        ("Material", "RenderingMaterial", "RenderingMaterial", 1, "Material", "Returns rendering material parameters."),
     ]
-    cur.executemany("INSERT INTO properties VALUES (?, ?, ?, ?, ?)", properties)
+    # Add inherited Application/Name clones across noise features + Material/Pad
+    for iface_name in [f"NoiseFeature{i}" for i in range(1, 21)] + ["Pad", "Prism", "Product", "Material"]:
+        properties.append((iface_name, "Application", "Application", 1, "AnyObject", "Returns the root Application."))
+        properties.append((iface_name, "Name", "CATBSTR", 0, "AnyObject", "Returns or sets the object name."))
+    cur.executemany("INSERT INTO properties VALUES (?, ?, ?, ?, ?, ?)", properties)
 
     methods = [
-        ("Pad", "GetDirection", "void", json.dumps([{"name": "ioDirection", "type": "CATSafeArrayVariant"}]), "Prism"),
-        ("Pad", "GetItem", "CATBaseDispatch", json.dumps([{"name": "IDName", "type": "CATBSTR"}]), "AnyObject"),
-        ("Prism", "GetDirection", "void", json.dumps([{"name": "ioDirection", "type": "CATSafeArrayVariant"}]), "Prism"),
+        ("Pad", "GetDirection", "void", json.dumps([{"name": "ioDirection", "type": "CATSafeArrayVariant"}]), "Prism", "Returns extrusion direction.", ""),
+        ("Pad", "GetItem", "CATBaseDispatch", json.dumps([{"name": "IDName", "type": "CATBSTR"}]), "AnyObject", "Retrieves an automation item by name.", ""),
+        ("Prism", "GetDirection", "void", json.dumps([{"name": "ioDirection", "type": "CATSafeArrayVariant"}]), "Prism", "Returns prism direction.", ""),
         (
             "VisPropertySet",
             "GetRealColor",
@@ -98,10 +134,35 @@ def build_synthetic_core_db(db_path: Path) -> Path:
                 {"name": "oInheritance", "type": "long"},
             ]),
             "VisPropertySet",
+            "Retrieves real RGB color components.",
+            "",
         ),
-        ("SystemConfiguration", "GetProductNames", "void", json.dumps([{"name": "ioProductNames", "type": "CATSafeArrayVariant"}]), "SystemConfiguration"),
+        ("SystemConfiguration", "GetProductNames", "void", json.dumps([{"name": "ioProductNames", "type": "CATSafeArrayVariant"}]), "SystemConfiguration", "Gets installed configuration names.", ""),
+        ("MaterialFamilies", "Item", "MaterialFamily", json.dumps([{"name": "iIndex", "type": "CATVariant"}]), "MaterialFamilies", "Returns a material family by index or name.", ""),
+        ("MaterialFamilies", "Add", "MaterialFamily", json.dumps([]), "MaterialFamilies", "Creates a new material family.", ""),
+        ("Materials", "Item", "Material", json.dumps([{"name": "iIndex", "type": "CATVariant"}]), "Materials", "Returns a material by index or name.", ""),
+        ("Materials", "Add", "Material", json.dumps([]), "Materials", "Adds a new material to the family.", ""),
+        (
+            "Material",
+            "PutIcon",
+            "void",
+            json.dumps([{"name": "iPath", "type": "CATBSTR", "description": "Folder path ending with separator."}]),
+            "Material",
+            "Read the icon of a material from JPEG file. The parameter is the path of the folder where the JPEG is going to be read Ex : E:\\folder\\",
+            "void",
+        ),
+        (
+            "Material",
+            "GetIcon",
+            "void",
+            json.dumps([{"name": "iPath", "type": "CATBSTR"}]),
+            "Material",
+            "Write the icon of a material as JPEG to disc folder.",
+            "",
+        ),
+        ("Material", "CreateRenderingData", "RenderingMaterial", json.dumps([]), "Material", "Creates rendering optical data on the material.", ""),
     ]
-    cur.executemany("INSERT INTO methods VALUES (?, ?, ?, ?, ?)", methods)
+    cur.executemany("INSERT INTO methods VALUES (?, ?, ?, ?, ?, ?, ?)", methods)
 
     enums = [
         (
@@ -125,7 +186,7 @@ def build_synthetic_core_db(db_path: Path) -> Path:
     ]
     cur.executemany("INSERT INTO enums VALUES (?, ?, ?)", enums)
 
-    # Synthetic official usecases
+    # Synthetic official usecases (including 8 Material noise rows to test community recipe non-starvation)
     cur.execute(
         "INSERT INTO usecases (interface_name, source, title, workbench, tags, provenance_json, context, code) VALUES (?, 'official', ?, '', '', NULL, ?, ?)",
         ("VisPropertySet", "Synthetic GetRealColor Example", "GetRealColor synthetic example", "status = vis.GetRealColor(r, g, b, inh)"),
@@ -134,6 +195,11 @@ def build_synthetic_core_db(db_path: Path) -> Path:
         "INSERT INTO usecases (interface_name, source, title, workbench, tags, provenance_json, context, code) VALUES (?, 'official', ?, '', '', NULL, ?, ?)",
         ("Pad", "Synthetic Pad Example", "Pad synthetic example", "Set pad1 = sf.AddNewPad(sk1, 20.0)"),
     )
+    for idx in range(1, 9):
+        cur.execute(
+            "INSERT INTO usecases (interface_name, source, title, workbench, tags, provenance_json, context, code) VALUES (?, 'official', ?, 'Material', 'material', NULL, ?, ?)",
+            ("MaterialFamilies", f"MaterialFamilies Official Example #{idx}", f"Material item snippet {idx}", f"Set fam = fams.Item({idx}) ' material example"),
+        )
 
     # Load repo's own open-source community recipes
     recipes_file = PROJECT_ROOT / "data" / "recipes" / "community_recipes.json"
@@ -158,21 +224,21 @@ def build_synthetic_core_db(db_path: Path) -> Path:
         "INSERT INTO usecases_fts (id, interface_name, title, workbench, tags, context, code) "
         "SELECT id, COALESCE(interface_name,''), COALESCE(title,''), COALESCE(workbench,''), COALESCE(tags,''), COALESCE(context,''), COALESCE(code,'') FROM usecases"
     )
-    cur.execute(
-        "INSERT INTO apis_fts (item_type, name, description, framework, parent_interface, declared_in, data_type, readonly) "
-        "SELECT 'interface', name, COALESCE(description,''), COALESCE(framework,''), '', '', '', 0 FROM interfaces"
-    )
-    cur.execute(
-        "INSERT INTO apis_fts (item_type, name, description, framework, parent_interface, declared_in, data_type, readonly) "
-        "SELECT 'enum', name, COALESCE(description,''), '', '', '', '', 0 FROM enums"
-    )
-    cur.execute(
-        "INSERT INTO apis_fts (item_type, name, description, framework, parent_interface, declared_in, data_type, readonly) "
-        "SELECT 'property', interface_name || '.' || name, '', '', interface_name, COALESCE(declared_in,''), COALESCE(type,''), readonly FROM properties"
-    )
-    cur.execute(
-        "INSERT INTO apis_fts (item_type, name, description, framework, parent_interface, declared_in, data_type, readonly) "
-        "SELECT 'method', interface_name || '.' || name, '', '', interface_name, COALESCE(declared_in,''), COALESCE(return_type,''), 0 FROM methods"
+    fts_rows = []
+    for name, fw, desc, _ in interfaces:
+        fts_rows.append(("interface", name, expand_camel_tokens(name), desc, fw, "", name, "", 0, 0))
+    for name, desc, _ in enums:
+        fts_rows.append(("enum", name, expand_camel_tokens(name), desc, "", "", name, "", 0, 0))
+    for iface, name, ptype, ro, decl, desc in properties:
+        is_inh = 0 if (not decl or decl.lower() == iface.lower()) else 1
+        fts_rows.append(("property", f"{iface}.{name}", expand_camel_tokens(name), desc, "", iface, decl, ptype, ro, is_inh))
+    for iface, name, rtype, _, decl, desc, ret_desc in methods:
+        is_inh = 0 if (not decl or decl.lower() == iface.lower()) else 1
+        fts_rows.append(("method", f"{iface}.{name}", expand_camel_tokens(name), f"{desc} {ret_desc}".strip(), "", iface, decl, rtype, 0, is_inh))
+    cur.executemany(
+        "INSERT INTO apis_fts (item_type, name, camel_tokens, description, framework, parent_interface, declared_in, data_type, readonly, is_inherited) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        fts_rows,
     )
 
     conn.commit()

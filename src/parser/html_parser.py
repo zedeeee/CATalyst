@@ -11,6 +11,84 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+_WS_RE = re.compile(r"\s+")
+
+
+def _clean_text(text: str) -> str:
+    return _WS_RE.sub(" ", (text or "").replace("\xa0", " ")).strip()
+
+
+def _extract_text_before_nested_blocks(node: Any) -> str:
+    """Collect text from node children before any nested <dl> or <pre> block."""
+    if node is None:
+        return ""
+    parts: List[str] = []
+    for child in node.children:
+        tag = getattr(child, "name", None)
+        if tag in ("dl", "pre", "table", "h2", "hr"):
+            break
+        if tag == "br":
+            parts.append(" ")
+        elif tag is None:
+            parts.append(str(child))
+        else:
+            # Strip trailing nested dl/pre inside wrapped inline nodes if any
+            if hasattr(child, "find") and child.find(("dl", "pre")):
+                parts.append(_extract_text_before_nested_blocks(child))
+            else:
+                parts.append(child.get_text(" ", strip=False))
+    return _clean_text("".join(parts))
+
+
+def _extract_member_doc(table_tag: Any) -> Dict[str, Any]:
+    """Extract sibling <dl><dd> description, parameter docs, and Returns notes for a member."""
+    doc: Dict[str, Any] = {"description": "", "returns_desc": "", "param_docs": {}}
+    anchor = table_tag.find_parent("dt") or table_tag
+
+    target_dl = None
+    for sib in anchor.find_next_siblings():
+        tag = getattr(sib, "name", None)
+        if not tag:
+            continue
+        if tag in ("table", "h2", "hr", "dt") or (tag == "a" and sib.get("name")):
+            break
+        if tag == "dl":
+            target_dl = sib
+            break
+
+    if target_dl is None:
+        return doc
+
+    first_dd = target_dl.find("dd")
+    if first_dd:
+        doc["description"] = _extract_text_before_nested_blocks(first_dd)
+
+    for dt in target_dl.find_all("dt"):
+        dt_label = _clean_text(dt.get_text(" ", strip=True)).lower()
+        if "parameters:" in dt_label:
+            param_dd = dt.find_next_sibling("dd")
+            if not param_dd:
+                continue
+            param_dl = param_dd.find("dl")
+            search_root = param_dl if param_dl else param_dd
+            for p_dt in search_root.find_all("dt", recursive=(param_dl is not None)):
+                tt = p_dt.find("tt")
+                if not tt:
+                    continue
+                p_name = tt.get_text(strip=True)
+                p_dd = p_dt.find_next_sibling("dd")
+                p_desc = _extract_text_before_nested_blocks(p_dd)
+                if p_name and p_desc:
+                    doc["param_docs"][p_name] = p_desc
+        elif "returns:" in dt_label:
+            ret_dd = dt.find_next_sibling("dd")
+            ret_text = _extract_text_before_nested_blocks(ret_dd)
+            if ret_text:
+                doc["returns_desc"] = ret_text
+
+    return doc
+
+
 class CatiaHtmlParser:
     def __init__(self):
         # Regex to extract father class from generatedFatherClass('id', 'name', 'type')
@@ -98,10 +176,23 @@ class CatiaHtmlParser:
             if h1:
                 interface_data["name"] = h1.text.split("(")[0].strip()
 
-        # Extract Description
+        # Extract Description (summary in <b><i>...</i></b> plus Role/details up to <hr>)
         for b_tag in soup.find_all("b"):
             if b_tag.find("i"):
-                interface_data["description"] = b_tag.text.strip()
+                intro_parts = [_clean_text(b_tag.get_text(" ", strip=True))]
+                for sib in b_tag.next_siblings:
+                    tag = getattr(sib, "name", None)
+                    if tag in ("hr", "dl", "h2", "table"):
+                        break
+                    if tag is None:
+                        t = _clean_text(str(sib))
+                        if t:
+                            intro_parts.append(t)
+                    elif tag not in ("script", "br"):
+                        t = _clean_text(sib.get_text(" ", strip=True))
+                        if t:
+                            intro_parts.append(t)
+                interface_data["description"] = _clean_text(" ".join(intro_parts))
                 break
 
         # Extract Members (Properties and Methods)
@@ -128,11 +219,13 @@ class CatiaHtmlParser:
                     t_match = re.search(r"activateLink\(['\"]([^'\"]+)['\"]", script_link.string)
                     if t_match:
                         prop_type = t_match.group(1)
-                
+
+                member_doc = _extract_member_doc(table)
                 interface_data["properties"].append({
                     "name": prop_name,
                     "type": prop_type,
-                    "readonly": is_readonly
+                    "readonly": is_readonly,
+                    "description": member_doc["description"],
                 })
                 continue
 
@@ -149,6 +242,8 @@ class CatiaHtmlParser:
                         t_match = re.search(r"activateLink\(['\"]([^'\"]+)['\"]", script_links[-1].string)
                         if t_match:
                             return_type = t_match.group(1)
+
+                member_doc = _extract_member_doc(table)
 
                 # Extract Parameters (iterate over all <tt> tags within the method's table)
                 params = []
@@ -168,15 +263,20 @@ class CatiaHtmlParser:
                                 if t_match:
                                     p_type = t_match.group(1)
                                     
-                    params.append({
+                    p_entry: Dict[str, Any] = {
                         "name": p_name,
-                        "type": p_type
-                    })
+                        "type": p_type,
+                    }
+                    if p_name in member_doc["param_docs"]:
+                        p_entry["description"] = member_doc["param_docs"][p_name]
+                    params.append(p_entry)
 
                 interface_data["methods"].append({
                     "name": func_name,
                     "return_type": return_type,
-                    "params": params
+                    "params": params,
+                    "description": member_doc["description"],
+                    "returns_desc": member_doc["returns_desc"],
                 })
 
         return interface_data
