@@ -134,3 +134,30 @@ def test_parse_interface_member_docs_params_and_role(parser, tmp_path):
     assert "Folder path containing JPEG thumbnails." in m["params"][0]["description"]
 
 
+def test_parse_multiline_func_return_type(parser, tmp_path):
+    """Multi-row Func tables must capture the return type after ') As', not the first param type."""
+    html_content = """
+    <html><body>
+    <script>generatedFatherClass('interface_SyntheticShapeFactory_1','SyntheticShapeFactory','0');</script>
+    <b><i>Factory fixture.</i></b><hr>
+    <table><tr><td>o Func <b>AddNewPad</b>(<td><script type="text/javascript"> activateLink('Sketch','Sketch')</script> <td><tt>iSketch</tt>,<tr><td></td><td><script type="text/javascript"> activateLink('double','double')</script> <td><tt>iHeight</tt>) As <script type="text/javascript"> activateLink('Pad','Pad')</script> </table></dt>
+    <dl><dd>Creates and returns a new pad.</dl>
+    </body></html>
+    """
+    fw_dir = tmp_path / "PartInterfaces"
+    fw_dir.mkdir()
+    fp = fw_dir / "interface_SyntheticShapeFactory_1.htm"
+    fp.write_text(html_content, encoding="utf-8")
+
+    data = parser.parse_interface(fp)
+    assert len(data["methods"]) == 1
+    m = data["methods"][0]
+    assert m["name"] == "AddNewPad"
+    assert m["return_type"] == "Pad"
+    assert m["params"] == [
+        {"name": "iSketch", "type": "Sketch"},
+        {"name": "iHeight", "type": "double"},
+    ]
+
+
+

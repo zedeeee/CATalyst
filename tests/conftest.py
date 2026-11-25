@@ -76,10 +76,14 @@ def build_synthetic_core_db(db_path: Path) -> Path:
     interfaces = [
         ("Application", "InfInterfaces", "Represents the root CATIA V5 Application object.", json.dumps(["Application", "AnyObject"])),
         ("AnyObject", "InfInterfaces", "Represents the base object for all Automation interfaces.", json.dumps(["AnyObject"])),
+        ("Document", "InfInterfaces", "Represents an abstract CATIA V5 Document.", json.dumps(["Document", "AnyObject"])),
+        ("Documents", "InfInterfaces", "Collection of open documents.", json.dumps(["Documents", "Collection", "AnyObject"])),
         ("Pad", "PartInterfaces", "Represents the pad extruded solid shape.", json.dumps(["Pad", "Prism", "SketchBasedShape", "Shape", "AnyObject"])),
         ("Prism", "PartInterfaces", "Represents the prism shape.", json.dumps(["Prism", "SketchBasedShape", "Shape", "AnyObject"])),
         ("PartDocument", "MecModInterfaces", "Represents a CATPart document.", json.dumps(["PartDocument", "Document", "AnyObject"])),
         ("Part", "MecModInterfaces", "Represents the mechanical Part root.", json.dumps(["Part", "AnyObject"])),
+        ("Factory", "InfInterfaces", "Represents a generic CATIA feature factory.", json.dumps(["Factory", "AnyObject"])),
+        ("ShapeFactory", "PartInterfaces", "Factory for solid PartDesign features like Pad.", json.dumps(["ShapeFactory", "Factory", "AnyObject"])),
         ("Product", "ProductStructureInterfaces", "Represents an Assembly Product node.", json.dumps(["Product", "AnyObject"])),
         ("VisPropertySet", "InfInterfaces", "Represents visual graphic properties.", json.dumps(["VisPropertySet", "AnyObject"])),
         ("SystemConfiguration", "InfInterfaces", "Provides OS and CATIA release metadata.", json.dumps(["SystemConfiguration", "AnyObject"])),
@@ -106,6 +110,7 @@ def build_synthetic_core_db(db_path: Path) -> Path:
         ("AnyObject", "Application", "Application", 1, "AnyObject", "Returns the root Application."),
         ("AnyObject", "Name", "CATBSTR", 0, "AnyObject", "Returns or sets the object name."),
         ("PartDocument", "Part", "Part", 1, "PartDocument", "Returns the root Part inside the PartDocument."),
+        ("Part", "ShapeFactory", "Factory", 1, "Part", "Returns the ShapeFactory for solid features."),
         ("Product", "PartNumber", "CATBSTR", 0, "Product", "Returns or sets the product part number."),
         ("SystemConfiguration", "ServicePack", "long", 1, "SystemConfiguration", "Returns service pack number."),
         ("SystemConfiguration", "Release", "long", 1, "SystemConfiguration", "Returns CATIA release number."),
@@ -161,6 +166,7 @@ def build_synthetic_core_db(db_path: Path) -> Path:
             "",
         ),
         ("Material", "CreateRenderingData", "RenderingMaterial", json.dumps([]), "Material", "Creates rendering optical data on the material.", ""),
+        ("ShapeFactory", "AddNewPad", "Pad", json.dumps([{"name": "iSketch", "type": "AnyObject"}, {"name": "iHeight", "type": "double"}]), "ShapeFactory", "Creates a new Pad extrusion feature.", ""),
     ]
     cur.executemany("INSERT INTO methods VALUES (?, ?, ?, ?, ?, ?, ?)", methods)
 

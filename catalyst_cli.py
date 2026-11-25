@@ -31,6 +31,10 @@ def format_interface_markdown(data: dict) -> str:
         
     if data.get('description'):
         md.append(f"> {data['description']}\n")
+
+    if data.get('navigation_path'):
+        nav = data['navigation_path']
+        md.append(f"**Navigation Path (`{nav['source']} -> {nav['target']}`)**: `{nav['python_chain']}`\n")
     
     if data.get('properties'):
         md.append("## Properties")
@@ -85,6 +89,10 @@ def format_enum_markdown(data: dict) -> str:
     md.append(f"# {data['name']} (Enum)")
     if data.get('description'):
         md.append(f"> {data['description']}\n")
+
+    if data.get('navigation_path'):
+        nav = data['navigation_path']
+        md.append(f"**Navigation Path (`{nav['source']} -> {nav['target']}`)**: `{nav['python_chain']}`\n")
     
     if data.get('matched_value'):
         mv = data['matched_value']
@@ -109,7 +117,12 @@ def main():
     get_parser = subparsers.add_parser("get", help="Get full interface details or filter by specific member")
     get_parser.add_argument("name", type=str, help="Name of the interface (e.g., Pad, VisPropertySet)")
     get_parser.add_argument("--member", "-m", type=str, default=None, help="Filter to specific method or property")
+    get_parser.add_argument("--from", dest="from_interface", type=str, default=None, help="Compute shortest navigation path from root interface")
     get_parser.add_argument("--no-usecases", action="store_true", help="Omit code examples to save space")
+
+    path_parser = subparsers.add_parser("path", help="Find shortest COM object navigation path between two interfaces")
+    path_parser.add_argument("target", type=str, help="Target interface name (e.g., Material, Pad, RenderingMaterial)")
+    path_parser.add_argument("--from", dest="from_interface", type=str, default="Application", help="Starting interface (default: Application)")
     
     usecase_parser = subparsers.add_parser("usecase", help="Get targeted examples for an interface (Official / Community)")
     usecase_parser.add_argument("interface", type=str, help="Name of the interface (e.g., Pad, Product, VisPropertySet)")
@@ -243,10 +256,22 @@ def main():
             include_usecases=not args.no_usecases
         )
         if res:
+            if getattr(args, "from_interface", None) and "name" in res:
+                nav = db.get_navigation_path(res["name"], from_interface=args.from_interface)
+                if nav:
+                    res["navigation_path"] = nav
             print(format_interface_markdown(res))
         else:
             print(f"Interface '{args.name}' not found.")
             sys.exit(1)
+
+    elif args.command == "path":
+        import json
+        nav = db.get_navigation_path(args.target, from_interface=args.from_interface)
+        if not nav:
+            print(f"No COM navigation path found from '{args.from_interface}' to '{args.target}'.")
+            sys.exit(1)
+        print(json.dumps(nav, indent=2, ensure_ascii=False))
 
     elif args.command == "usecase":
         ucs = db.get_usecases(

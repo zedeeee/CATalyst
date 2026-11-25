@@ -96,12 +96,14 @@ def get_catia_interface(
     interface: str = "",
     member_name: str = "",
     member: str = "",
+    from_interface: str = "",
     include_usecases: bool = True,
     max_usecases: int = 3
 ) -> str:
     """
     Retrieve full documentation for a specific CATIA V5 COM Interface.
-    Supports member-level filtering and usecase granularity control to save tokens.
+    Supports member-level filtering, COM object graph navigation path from a root interface,
+    and usecase granularity control to save tokens.
     
     Args:
         name: Name of the interface (e.g., 'Pad', 'Prism', 'PartDocument', 'VisPropertySet')
@@ -109,12 +111,14 @@ def get_catia_interface(
         interface: Alias for name
         member_name: Optional property or method name to filter by (e.g., 'SetShow', 'PartNumber')
         member: Alias for member_name
+        from_interface: Optional starting COM interface to compute shortest access chain (e.g., 'Application', 'PartDocument')
         include_usecases: Whether to include VBScript code examples (default: True, set False for signature-only)
         max_usecases: Maximum usecases to return in overview mode (default: 3)
     """
     try:
         target_name = (name or interface_name or interface).strip()
         target_member = (member_name or member).strip()
+        start_iface = (from_interface or "").strip()
 
         if not target_name:
             return json.dumps({
@@ -137,6 +141,11 @@ def get_catia_interface(
                 "isError": True,
                 "error": f"Interface '{target_name}' not found in CATIA V5 documentation."
             }, ensure_ascii=False)
+
+        if start_iface and isinstance(res, dict) and "name" in res:
+            nav = db.get_navigation_path(res["name"], from_interface=start_iface)
+            if nav:
+                res["navigation_path"] = nav
 
         docs_db = get_docs_db()
         if docs_db and isinstance(res, dict) and "name" in res:

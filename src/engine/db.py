@@ -68,6 +68,7 @@ def _resolve_db_path(db_path: Optional[Union[str, Path]] = None) -> Path:
 from .search_grammar import get_search_grammar
 from .pitfalls import get_method_pitfall
 from .text_utils import expand_camel_tokens, split_camel_case
+from .object_graph import ObjectGraph
 
 
 def _generate_python_method_hint(method_name: str, return_type: str, params: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
@@ -133,6 +134,8 @@ class CatalystDB:
         self._comm_fts_lock = threading.Lock()
         self._comm_fts_conn: Optional[sqlite3.Connection] = None
         self._comm_fts_sig: Optional[tuple] = None
+        self._graph_lock = threading.Lock()
+        self._object_graph: Optional[ObjectGraph] = None
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -753,6 +756,22 @@ class CatalystDB:
         if rem > 0 and len(community_results) > comm_quota:
             merged.extend(community_results[comm_quota:comm_quota + rem])
         return merged[:limit]
+
+    def get_navigation_path(
+        self,
+        target_interface: str,
+        from_interface: str = "Application",
+        max_hops: int = 8,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Finds the shortest COM access chain from `from_interface` (default 'Application')
+        to `target_interface` using the object model graph.
+        """
+        with self._graph_lock:
+            if self._object_graph is None:
+                self._object_graph = ObjectGraph(self.conn)
+            graph = self._object_graph
+        return graph.find_navigation_path(from_interface, target_interface, max_hops=max_hops)
 
     def get_search_syntax(
         self,

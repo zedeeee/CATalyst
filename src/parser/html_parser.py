@@ -89,6 +89,35 @@ def _extract_member_doc(table_tag: Any) -> Dict[str, Any]:
     return doc
 
 
+def _extract_return_type_from_table(table_tag: Any, default_type: str = "Any") -> str:
+    """
+    Extract return/property type located strictly after ') As ' across the entire signature table.
+    Avoids misreading the first parameter's type on multi-row parameter tables.
+    """
+    table_html = str(table_tag)
+    m = re.search(r"\)\s*As\s*(.+?)(?:</td>|</tr>|</table>)", table_html, re.S | re.I)
+    if m:
+        tail = m.group(1)
+        am = re.search(r"activateLink\(['\"]([^'\"]+)['\"]", tail)
+        if am:
+            return am.group(1).strip()
+        plain = re.sub(r"<[^>]+>", " ", tail)
+        plain = re.sub(r"\(Read Only\)", "", plain, flags=re.I)
+        plain = _clean_text(plain)
+        if plain:
+            return plain
+
+    # Fallback for simplified single-row templates without ') As'
+    tr = table_tag.find("tr")
+    if tr:
+        scripts = tr.find_all("script")
+        if scripts and scripts[-1].string and "activateLink" in scripts[-1].string:
+            am = re.search(r"activateLink\(['\"]([^'\"]+)['\"]", scripts[-1].string)
+            if am:
+                return am.group(1).strip()
+    return default_type
+
+
 class CatiaHtmlParser:
     def __init__(self):
         # Regex to extract father class from generatedFatherClass('id', 'name', 'type')
@@ -209,16 +238,8 @@ class CatiaHtmlParser:
             prop_match = self.property_pattern.search(text_content)
             if prop_match:
                 prop_name = prop_match.group(1)
-                is_readonly = "(Read Only)" in text_content
-                
-                # Extract Type (usually inside an activateLink script or raw text)
-                prop_type = "Any"
-                script_link = tr.find("script")
-                if script_link and script_link.string and "activateLink" in script_link.string:
-                    # activateLink('Type','Type')
-                    t_match = re.search(r"activateLink\(['\"]([^'\"]+)['\"]", script_link.string)
-                    if t_match:
-                        prop_type = t_match.group(1)
+                is_readonly = "(Read Only)" in table.text
+                prop_type = _extract_return_type_from_table(table, default_type="Any")
 
                 member_doc = _extract_member_doc(table)
                 interface_data["properties"].append({
@@ -235,13 +256,7 @@ class CatiaHtmlParser:
                 func_type = func_match.group(1)  # Func or Sub
                 func_name = func_match.group(2)
                 
-                return_type = "void" if func_type == "Sub" else "Any"
-                if func_type == "Func":
-                    script_links = tr.find_all("script")
-                    if script_links and script_links[-1].string:
-                        t_match = re.search(r"activateLink\(['\"]([^'\"]+)['\"]", script_links[-1].string)
-                        if t_match:
-                            return_type = t_match.group(1)
+                return_type = "void" if func_type == "Sub" else _extract_return_type_from_table(table, default_type="Any")
 
                 member_doc = _extract_member_doc(table)
 

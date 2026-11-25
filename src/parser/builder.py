@@ -19,6 +19,7 @@ from .html_parser import CatiaHtmlParser
 from .inheritance import InheritanceTree
 from .usecase_parser import UsecaseParser
 from src.engine.text_utils import expand_camel_tokens
+from src.engine.object_graph import materialize_object_edges
 
 logger = logging.getLogger(__name__)
 
@@ -316,9 +317,11 @@ class CatalystBuilder:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_usecases_workbench ON usecases(workbench)")
         self.conn.commit()
 
-        # Pass 4: Populate FTS5 Search Indexes
-        logger.info("Pass 4: Populating FTS5 Full-Text Search Indexes...")
+        # Pass 4: Populate FTS5 Search Indexes & COM Object Navigation Graph
+        logger.info("Pass 4: Populating FTS5 Full-Text Search Indexes & Object Graph...")
         self._populate_fts_indexes(cursor)
+        edge_count = materialize_object_edges(self.conn)
+        logger.info(f"Materialized {edge_count} COM object graph navigation edges.")
         
         logger.info(f"Build complete. Database saved to {self.db_path}")
 
