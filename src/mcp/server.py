@@ -392,12 +392,33 @@ def search_catia_api(
         }
         if reverse_hosts:
             payload["host_interfaces_summary"] = reverse_hosts
-        if len(results) == 0 and not reverse_hosts and get_docs_db() is not None:
-            payload["hint"] = (
-                "No COM Automation API matches found. If this is a GUI-only feature, batch protocol, "
-                "or Tools>Options/.CATSettings item, try search_catia_docs, search_catia_settings, "
-                "or search_catia_samples."
-            )
+
+        # Cross-link curated community recipes & offline docs regardless of strict 0-hit gate
+        if filter_type == "all":
+            comm_hints = db.search_recipes(search_query, source="community", limit=2)
+            if comm_hints:
+                payload["related_recipes"] = [
+                    {"interface": r["interface"], "title": r["title"], "workbench": r["workbench"]}
+                    for r in comm_hints
+                ]
+
+        docs_db = get_docs_db()
+        if docs_db is not None and (len(results) == 0 or filter_type == "all"):
+            try:
+                doc_hits = docs_db.search_docs(search_query, limit=2)
+                if doc_hits.get("results"):
+                    payload["related_docs"] = [
+                        {"doc_id": d["doc_id"], "title": d["title"], "category": d["category"]}
+                        for d in doc_hits["results"]
+                    ]
+            except Exception:
+                pass
+            if len(results) == 0 and not reverse_hosts:
+                payload["hint"] = (
+                    "No COM Automation API matches found. If this is a GUI-only feature, batch protocol, "
+                    "or Tools>Options/.CATSettings item, try search_catia_docs, search_catia_settings, "
+                    "or search_catia_samples."
+                )
 
         return json.dumps(payload, indent=2, ensure_ascii=False)
     except Exception as e:

@@ -69,6 +69,7 @@ from .search_grammar import get_search_grammar
 from .pitfalls import get_method_pitfall
 from .text_utils import expand_camel_tokens, split_camel_case
 from .object_graph import ObjectGraph
+from .synonyms import expand_bilingual_queries
 
 
 def _generate_python_method_hint(method_name: str, return_type: str, params: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
@@ -623,7 +624,8 @@ class CatalystDB:
         query: str,
         workbench: Optional[str] = None,
         source: str = "all",
-        limit: int = 5
+        limit: int = 5,
+        _allow_synonym: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         Searches practical code recipes across all interfaces by intent keyword, tags, or workbench.
@@ -755,6 +757,19 @@ class CatalystDB:
         rem = limit - len(merged)
         if rem > 0 and len(community_results) > comm_quota:
             merged.extend(community_results[comm_quota:comm_quota + rem])
+
+        if not merged and _allow_synonym:
+            seen_keys = set()
+            for alt_q in expand_bilingual_queries(query):
+                for item in self.search_recipes(
+                    alt_q, workbench=workbench, source=source, limit=limit, _allow_synonym=False
+                ):
+                    key = (item.get("source"), item.get("interface"), item.get("title"))
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        merged.append(item)
+                        if len(merged) >= limit:
+                            return merged[:limit]
         return merged[:limit]
 
     def get_navigation_path(
@@ -916,7 +931,7 @@ class CatalystDB:
             "methods": methods
         }
 
-    def search(self, query: str, item_type: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
+    def search(self, query: str, item_type: Optional[str] = None, limit: int = 20, _allow_synonym: bool = True) -> List[Dict[str, Any]]:
         """
         Searches across interfaces, enums, properties, and methods.
         Prioritizes SQLite FTS5 BM25 full-text indexing, with automatic fallback to LIKE queries.
@@ -1095,6 +1110,18 @@ class CatalystDB:
                     "readonly": False,
                     "declared_in": row["declared_in"]
                 })
+
+        if not results and _allow_synonym:
+            seen_names = set()
+            target_limit = limit if limit else 20
+            for alt_q in expand_bilingual_queries(query):
+                for item in self.search(alt_q, item_type=item_type, limit=target_limit, _allow_synonym=False):
+                    key = (item["type"], item["name"])
+                    if key not in seen_names:
+                        seen_names.add(key)
+                        results.append(item)
+                        if len(results) >= target_limit:
+                            return results[:target_limit]
 
         return results[:limit] if limit else results
 
