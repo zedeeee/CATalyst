@@ -62,6 +62,9 @@ CATalyst enforces a **strict read-only knowledge plane** (zero live `win32com` c
 ## Local Setup & Environment Isolation
 
 - **Local Database Initialization**: Core (`dist/catalyst.db`) and optional offline docs (`dist/local/catalyst_docs.db`) databases are built locally from your machine's CATIA V5 documentation and kept out of Git via `.gitignore`.
+- **Upgrading Existing Databases**:
+  - `v0.3.0` → `v0.3.1`: **No database rebuild required** (zero schema changes — simply refresh/restart your MCP server).
+  - `v0.2.x` → `v0.3.x`: **Rebuild `dist/catalyst.db`** via `uv run python build.py` to populate `object_edges` and member descriptions (`catalyst_docs.db` auto-heals `doc_api_links` on first query without re-unpacking `Bxxdoc`).
 - **Isolated Virtual Environment by Default**: Always use `uv sync` / `uv run` (project-local `.venv/`). `build.py` and `build_docs.py` warn if invoked under global Python.
 - **Zero System Side-Effects**: Builders print resolved paths before reading local CATIA folders and never modify system `PATH`, Windows Registry, or CATIA installation directories.
 
