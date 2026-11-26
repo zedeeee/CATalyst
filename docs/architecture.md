@@ -32,7 +32,7 @@ CATalyst 采用**纯只读知识平面**设计（不耦合实时 `win32com` 会�
 | `build_docs.py` | 可选离线文档/设置/样板构建器与路径绑定工具（生成 `dist/local/catalyst_docs.db`） |
 | `catalyst_cli.py` | 与 MCP 10 工具完全对称的本地 CLI 入口（含 `path` 对象导航子命令） |
 | `src/parser/` | `chm_unpacker.py`、`html_parser.py`（提取完整成员 `<dl><dd>` / `Parameters` / `Returns`）、`inheritance.py`、`usecase_parser.py`、`builder.py`、`docs_parser.py`、`docs_builder.py` |
-| `src/engine/` | `db.py`（核心库查询 + FTS5 驼峰/双语检索 + 双轨 Recipe FTS5）、`docs_db.py`、`object_graph.py`（COM 对象模型有向图与最短路径寻路）、`pitfalls.py`（热加载 `data/pitfalls.json`）、`caveat_miner.py`（静态约束挖掘）、`linkage_builder.py`（返回类型传播反向索引）、`synonyms.py`、`text_utils.py`、`local_config.py`、`search_grammar.py` |
+| `src/engine/` | `db.py`（核心库查询 + 自适应粒度 + FTS5 检索 + 配方热加载）、`docs_db.py`、`formatter.py`（紧凑 JSON 序列化 + CHM 截断文本清洗 + IDL 极简签名卡渲染）、`object_graph.py`（COM 对象模型有向图与最短路径寻路）、`pitfalls.py`（热加载 `data/pitfalls.json`）、`caveat_miner.py`（静态约束挖掘）、`linkage_builder.py`（返回类型传播反向索引）、`synonyms.py`、`text_utils.py`、`local_config.py`、`search_grammar.py` |
 | `src/tools/` | `linkage_diff_reporter.py`（官方文档/样板源码穿透覆盖率对比看板生成器） |
 | `src/mcp/server.py` | FastMCP / MCP Server，暴露 10 个只读工具 |
 | `skills/catalyst-query/SKILL.md` | 跨项目 Agent Skill 定义 |
