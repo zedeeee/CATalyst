@@ -15,6 +15,7 @@ if sys.platform == "win32":
         pass
 
 from src.engine.db import CatalystDB
+from src.engine.formatter import dump_compact_json, format_interface_card
 
 def format_interface_markdown(data: dict) -> str:
     if "member_not_found" in data:
@@ -116,9 +117,12 @@ def main():
     
     get_parser = subparsers.add_parser("get", help="Get full interface details or filter by specific member")
     get_parser.add_argument("name", type=str, help="Name of the interface (e.g., Pad, VisPropertySet)")
-    get_parser.add_argument("--member", "-m", type=str, default=None, help="Filter to specific method or property")
+    get_parser.add_argument("--member", "-m", type=str, default=None, help="Filter to specific member(s) (exact, comma-list, or wildcard '*Fillet*')")
     get_parser.add_argument("--from", dest="from_interface", type=str, default=None, help="Compute shortest navigation path from root interface")
     get_parser.add_argument("--no-usecases", action="store_true", help="Omit code examples to save space")
+    get_parser.add_argument("--detail", choices=["auto", "summary", "compact", "full"], default="auto", help="Output detail level")
+    get_parser.add_argument("--format", "-f", dest="output_format", choices=["markdown", "card", "json"], default="markdown", help="Output format")
+    get_parser.add_argument("--include-base", action="store_true", help="Include AnyObject/CATBaseDispatch boilerplate members")
 
     path_parser = subparsers.add_parser("path", help="Find shortest COM object navigation path between two interfaces")
     path_parser.add_argument("target", type=str, help="Target interface name (e.g., Material, Pad, RenderingMaterial)")
@@ -250,17 +254,30 @@ def main():
         sys.exit(1)
 
     if args.command == "get":
+        eff_detail = "full" if args.output_format == "markdown" and args.detail == "auto" else args.detail
         res = db.get_interface(
             args.name,
             member_name=args.member,
-            include_usecases=not args.no_usecases
+            include_usecases=not args.no_usecases,
+            detail=eff_detail,
+            include_base_members=args.include_base or (args.output_format == "markdown"),
+            inline_enums=True,
         )
         if res:
             if getattr(args, "from_interface", None) and "name" in res:
-                nav = db.get_navigation_path(res["name"], from_interface=args.from_interface)
+                nav = db.get_navigation_path(
+                    res["name"],
+                    from_interface=args.from_interface,
+                    compact=(eff_detail != "full"),
+                )
                 if nav:
                     res["navigation_path"] = nav
-            print(format_interface_markdown(res))
+            if args.output_format == "card":
+                print(format_interface_card(res))
+            elif args.output_format == "json":
+                print(dump_compact_json(res))
+            else:
+                print(format_interface_markdown(res))
         else:
             print(f"Interface '{args.name}' not found.")
             sys.exit(1)

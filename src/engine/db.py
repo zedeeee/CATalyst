@@ -5,11 +5,12 @@ Provides a clean Python API over the generated SQLite database for fast retrieva
 
 import os
 import json
+import fnmatch
 import sqlite3
 import logging
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Union, Set
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,30 @@ from .pitfalls import get_method_pitfall
 from .text_utils import expand_camel_tokens, split_camel_case
 from .object_graph import ObjectGraph
 from .synonyms import expand_bilingual_queries
+from .formatter import format_member_signature, sanitize_doc_text
+
+_BASE_NOISE_INTERFACES: Set[str] = {
+    "anyobject",
+    "catbasedispatch",
+    "catbaseunknown",
+    "idispatch",
+    "iunknown",
+}
+_PRIMITIVE_IDL_TYPES: Set[str] = {
+    "",
+    "void",
+    "boolean",
+    "long",
+    "double",
+    "short",
+    "float",
+    "catbstr",
+    "catvariant",
+    "catsafearrayvariant",
+    "anyobject",
+    "reference",
+    "catbasedispatch",
+}
 
 
 def _generate_python_method_hint(method_name: str, return_type: str, params: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
@@ -293,29 +318,52 @@ class CatalystDB:
         name: str,
         member_name: Optional[str] = None,
         include_usecases: bool = True,
-        max_usecases: int = 3
+        max_usecases: int = 3,
+        detail: str = "full",
+        include_base_members: bool = True,
+        inline_enums: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
-        Retrieves an interface by name with optional member filtering and usecase granularity control.
-        
-        Args:
-            name: Exact or case-insensitive interface name (e.g. 'Pad', 'VisPropertySet')
-            member_name: Optional property or method name to filter by (e.g. 'SetShow', 'PartNumber')
-            include_usecases: Whether to include VBScript code examples (default: True)
-            max_usecases: Maximum usecases to return in overview mode (default: 3, 0 or negative for unlimited)
+        Retrieves an interface by name with optional member filtering (supports exact,
+        comma-separated, and '*'/'?' wildcards), base-member folding, and adaptive detail granularity.
         """
         if not name:
             return None
         cursor = self.conn.cursor()
-        
+
         # 1. Fetch Interface metadata
         cursor.execute("SELECT * FROM interfaces WHERE name = ? COLLATE NOCASE", (name.strip(),))
         i_row = cursor.fetchone()
         if not i_row:
             return None
-            
+
         canonical_name = i_row["name"]
-        filter_member = member_name.strip().lower() if member_name else None
+        raw_member = (member_name or "").strip()
+        member_patterns = [p.strip().lower() for p in raw_member.split(",") if p.strip()] if raw_member else []
+        detail_norm = (detail or "full").strip().lower()
+        if detail_norm == "auto":
+            effective_detail = "full" if member_patterns else "compact"
+        elif detail_norm in ("summary", "compact", "full"):
+            effective_detail = detail_norm
+        else:
+            effective_detail = "full"
+
+        def _matches_member(cand_name: str) -> bool:
+            if not member_patterns:
+                return True
+            cand_low = cand_name.lower()
+            for pat in member_patterns:
+                if "*" in pat or "?" in pat:
+                    if fnmatch.fnmatchcase(cand_low, pat):
+                        return True
+                elif cand_low == pat:
+                    return True
+            return False
+
+        fold_base = (not include_base_members) and (not member_patterns) and (
+            canonical_name.lower() not in _BASE_NOISE_INTERFACES
+        )
+        omitted_base_members: List[str] = []
 
         # Fetch total counts for transparency and preventing silent truncation misunderstanding
         cursor.execute("SELECT COUNT(*) as cnt FROM properties WHERE interface_name = ? COLLATE NOCASE", (canonical_name,))
@@ -327,52 +375,71 @@ class CatalystDB:
         cursor.execute("SELECT COUNT(*) as cnt FROM usecases WHERE interface_name = ? COLLATE NOCASE", (canonical_name,))
         total_usecases = cursor.fetchone()["cnt"]
 
-        interface_data = {
+        iface_desc = i_row["description"] or ""
+        if effective_detail != "full":
+            iface_desc = sanitize_doc_text(iface_desc, max_chars=220)
+        else:
+            iface_desc = sanitize_doc_text(iface_desc)
+
+        interface_data: Dict[str, Any] = {
             "name": canonical_name,
             "framework": i_row["framework"],
-            "description": i_row["description"],
+            "description": iface_desc,
             "inheritance_chain": json.loads(i_row["inheritance_chain"]) if i_row["inheritance_chain"] else [],
             "total_properties": total_props,
             "total_methods": total_methods,
             "total_usecases": total_usecases,
             "properties": [],
             "methods": [],
-            "usecases": []
+            "usecases": [],
         }
-        
-        # 2. Fetch Properties
+
+        # 2. Fetch & filter Properties
+        raw_props: List[Dict[str, Any]] = []
         cursor.execute("SELECT * FROM properties WHERE interface_name = ? COLLATE NOCASE ORDER BY name", (canonical_name,))
         for p in cursor.fetchall():
             p_name = p["name"]
-            if filter_member and p_name.lower() != filter_member:
+            if not _matches_member(p_name):
+                continue
+            decl = p["declared_in"] or canonical_name
+            if fold_base and decl.lower() in _BASE_NOISE_INTERFACES:
+                omitted_base_members.append(p_name)
                 continue
             prop_entry: Dict[str, Any] = {
                 "name": p_name,
                 "type": p["type"],
                 "readonly": bool(p["readonly"]),
-                "declared_in": p["declared_in"],
+                "declared_in": decl,
             }
             if "description" in p.keys() and p["description"]:
-                prop_entry["description"] = p["description"]
-            interface_data["properties"].append(prop_entry)
-            
-        # 3. Fetch Methods
+                prop_entry["description"] = sanitize_doc_text(p["description"])
+            raw_props.append(prop_entry)
+
+        # 3. Fetch & filter Methods
+        raw_methods: List[Dict[str, Any]] = []
         cursor.execute("SELECT * FROM methods WHERE interface_name = ? COLLATE NOCASE ORDER BY name", (canonical_name,))
         for m in cursor.fetchall():
             m_name = m["name"]
-            if filter_member and m_name.lower() != filter_member:
+            if not _matches_member(m_name):
+                continue
+            decl = m["declared_in"] or canonical_name
+            if fold_base and decl.lower() in _BASE_NOISE_INTERFACES:
+                omitted_base_members.append(m_name)
                 continue
             params = json.loads(m["params_json"])
+            for prm in params:
+                if prm.get("description"):
+                    prm["description"] = sanitize_doc_text(prm["description"])
             method_entry: Dict[str, Any] = {
                 "name": m_name,
                 "return_type": m["return_type"],
                 "params": params,
-                "declared_in": m["declared_in"],
+                "declared_in": decl,
             }
             if "description" in m.keys() and m["description"]:
-                method_entry["description"] = m["description"]
+                method_entry["description"] = sanitize_doc_text(m["description"])
             if "returns_desc" in m.keys() and m["returns_desc"]:
-                method_entry["returns_desc"] = m["returns_desc"]
+                method_entry["returns_desc"] = sanitize_doc_text(m["returns_desc"])
             py_hints = _generate_python_method_hint(m_name, m["return_type"], params)
             if py_hints:
                 method_entry["python_mapping"] = py_hints
@@ -381,24 +448,102 @@ class CatalystDB:
             if pitfall:
                 method_entry["pitfall_warning"] = pitfall
 
-            interface_data["methods"].append(method_entry)
-            
+            raw_methods.append(method_entry)
+
+        # Format properties/methods according to effective_detail
+        total_displayed = len(raw_props) + len(raw_methods)
+        include_short_desc = total_displayed <= 25
+
+        if effective_detail == "summary":
+            interface_data["properties"] = [{"name": p["name"], "type": p["type"]} for p in raw_props]
+            interface_data["methods"] = [{"name": m["name"], "return_type": m["return_type"]} for m in raw_methods]
+        elif effective_detail == "compact":
+            for p in raw_props:
+                cp: Dict[str, Any] = {
+                    "name": p["name"],
+                    "sig": format_member_signature(p, canonical_name, is_property=True),
+                }
+                if include_short_desc and p.get("description"):
+                    cp["description"] = sanitize_doc_text(p["description"], max_chars=110)
+                interface_data["properties"].append(cp)
+
+            for m in raw_methods:
+                cm: Dict[str, Any] = {
+                    "name": m["name"],
+                    "sig": format_member_signature(m, canonical_name, is_property=False),
+                }
+                if isinstance(m.get("python_mapping"), dict) and m["python_mapping"].get("pywin32_call"):
+                    cm["py"] = m["python_mapping"]["pywin32_call"]
+                if include_short_desc and m.get("description"):
+                    cm["description"] = sanitize_doc_text(m["description"], max_chars=110)
+                if m.get("pitfall_warning"):
+                    cm["pitfall_warning"] = m["pitfall_warning"]
+                interface_data["methods"].append(cm)
+        else:
+            interface_data["properties"] = raw_props
+            interface_data["methods"] = raw_methods
+
+        if omitted_base_members:
+            interface_data["omitted_base_members"] = omitted_base_members
+
+        # Optional inline Enum expansion to eliminate follow-up get_catia_enum round-trips
+        if inline_enums and (raw_props or raw_methods):
+            cand_types: List[str] = []
+            seen_types: Set[str] = set()
+            for p in raw_props:
+                t = (p.get("type") or "").strip()
+                if t.lower() not in _PRIMITIVE_IDL_TYPES and t.lower() not in seen_types:
+                    seen_types.add(t.lower())
+                    cand_types.append(t)
+            for m in raw_methods:
+                rt = (m.get("return_type") or "").strip()
+                if rt.lower() not in _PRIMITIVE_IDL_TYPES and rt.lower() not in seen_types:
+                    seen_types.add(rt.lower())
+                    cand_types.append(rt)
+                for prm in m.get("params") or []:
+                    pt = (prm.get("type") or "").strip()
+                    if pt.lower() not in _PRIMITIVE_IDL_TYPES and pt.lower() not in seen_types:
+                        seen_types.add(pt.lower())
+                        cand_types.append(pt)
+
+            if cand_types:
+                placeholders = ",".join("?" for _ in cand_types)
+                cursor.execute(
+                    f"SELECT name, values_json FROM enums WHERE name IN ({placeholders}) COLLATE NOCASE",
+                    cand_types,
+                )
+                enum_rows = cursor.fetchall()
+                max_inline = len(enum_rows) if member_patterns else 8
+                referenced_enums: Dict[str, str] = {}
+                for erow in enum_rows[:max_inline]:
+                    vals = json.loads(erow["values_json"])
+                    parts = []
+                    for idx, item in enumerate(vals[:12]):
+                        v_idx = item.get("value", idx)
+                        parts.append(f"{v_idx}={item.get('name', '')}")
+                    if len(vals) > 12:
+                        parts.append(f"...(+{len(vals) - 12})")
+                    referenced_enums[erow["name"]] = ", ".join(parts)
+                if referenced_enums:
+                    interface_data["referenced_enums"] = referenced_enums
+
         # 4. Fetch Usecases (if enabled)
         if include_usecases:
-            if filter_member:
+            if member_patterns:
+                exact_pat = member_patterns[0]
                 cursor.execute(
                     "SELECT context, code FROM usecases WHERE interface_name = ? COLLATE NOCASE AND context = ? COLLATE NOCASE",
-                    (canonical_name, filter_member)
+                    (canonical_name, exact_pat)
                 )
                 matching_ucs = cursor.fetchall()
                 if not matching_ucs:
-                    # Fallback to searching context or code text
+                    clean_pat = exact_pat.replace("*", "").replace("?", "")
                     cursor.execute(
                         "SELECT context, code FROM usecases WHERE interface_name = ? COLLATE NOCASE AND (context LIKE ? OR code LIKE ?)",
-                        (canonical_name, f"%{filter_member}%", f"%{filter_member}%")
+                        (canonical_name, f"%{clean_pat}%", f"%{clean_pat}%")
                     )
                     matching_ucs = cursor.fetchall()
-                for uc in matching_ucs:
+                for uc in matching_ucs[:max_usecases if max_usecases > 0 else 10]:
                     interface_data["usecases"].append({
                         "context": uc["context"],
                         "code": uc["code"]
@@ -415,13 +560,13 @@ class CatalystDB:
                     })
 
         # If member_name was specified and neither properties nor methods matched
-        if filter_member and not interface_data["properties"] and not interface_data["methods"]:
+        if member_patterns and not raw_props and not raw_methods:
             return {
                 "name": canonical_name,
                 "member_not_found": member_name,
                 "message": f"Member '{member_name}' not found in interface '{canonical_name}'."
             }
-            
+
         return interface_data
 
     def get_usecases(
@@ -777,16 +922,44 @@ class CatalystDB:
         target_interface: str,
         from_interface: str = "Application",
         max_hops: int = 8,
+        compact: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
         Finds the shortest COM access chain from `from_interface` (default 'Application')
-        to `target_interface` using the object model graph.
+        to `target_interface` using the object model graph, enriching terminal method signatures.
         """
         with self._graph_lock:
             if self._object_graph is None:
                 self._object_graph = ObjectGraph(self.conn)
             graph = self._object_graph
-        return graph.find_navigation_path(from_interface, target_interface, max_hops=max_hops)
+        nav = graph.find_navigation_path(from_interface, target_interface, max_hops=max_hops, compact=False)
+        if not nav:
+            return None
+
+        steps = nav.get("steps") or []
+        if steps and steps[-1]["kind"] == "method":
+            last = steps[-1]
+            cur = self.conn.cursor()
+            cur.execute(
+                "SELECT return_type, params_json FROM methods WHERE interface_name = ? COLLATE NOCASE AND name = ? COLLATE NOCASE",
+                (last["from"], last["via"]),
+            )
+            mrow = cur.fetchone()
+            if mrow:
+                params = json.loads(mrow["params_json"]) if mrow["params_json"] else []
+                p_str = ", ".join(f"{p.get('name', '')}: {p.get('type', 'Variant')}" for p in params)
+                ret = mrow["return_type"] or "void"
+                chain = nav.get("python_chain", "")
+                placeholder = f"{last['via']}(...)"
+                if chain.endswith(placeholder):
+                    nav["python_chain"] = f"{chain[:-len(placeholder)]}{last['via']}({p_str}) -> {ret}"
+            pitfall = get_method_pitfall(last["from"], last["via"])
+            if pitfall:
+                nav["terminal_pitfall"] = pitfall
+
+        if compact:
+            nav.pop("steps", None)
+        return nav
 
     def get_search_syntax(
         self,
@@ -1015,7 +1188,7 @@ class CatalystDB:
                         results.append({
                             "type": row["type"],
                             "name": row["name"],
-                            "description": row["description"] or "",
+                            "description": sanitize_doc_text(row["description"] or "", strip_example=True, max_chars=140),
                             "framework": row["framework"] or "",
                             "parent_interface": row["parent_interface"] or "",
                             "data_type": row["data_type"] or "",
@@ -1038,7 +1211,7 @@ class CatalystDB:
                 results.append({
                     "type": row["type"],
                     "name": row["name"],
-                    "description": row["description"] or "",
+                    "description": sanitize_doc_text(row["description"] or "", strip_example=True, max_chars=140),
                     "framework": row["framework"],
                     "parent_interface": "",
                     "data_type": "",

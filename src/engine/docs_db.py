@@ -755,14 +755,16 @@ class CatalystDocsDB:
         for row in sample_rows:
             ref_id, rel_path = row["ref_id"], row["rel_path"]
             title, line_no = row["title"], row["line_no"]
-            code_snippet = row["code_snippet"]
-            entry = {
+            code_snippet = (row["code_snippet"] or "").strip()
+            entry: Dict[str, Any] = {
                 "sample_id": ref_id,
                 "file": rel_path,
-                "filename": title or Path(rel_path).name,
                 "line_no": line_no,
                 "code_context": code_snippet,
             }
+            fname = title or Path(rel_path).name
+            if fname and not rel_path.endswith(fname):
+                entry["filename"] = fname
             base_root = doc_root_loc if "doc_samples" in rel_path or "online" in rel_path else install_root_loc
             if base_root:
                 resolved_fields, ok = _resolve_portable_target(base_root, rel_path)
@@ -791,16 +793,19 @@ class CatalystDocsDB:
         for row in doc_rows:
             ref_id, rel_path = row["ref_id"], row["rel_path"]
             title, line_no = row["title"], row["line_no"]
-            code_snippet = row["code_snippet"]
-            official_note = row["official_note"]
+            code_snippet = (row["code_snippet"] or "").strip()
+            official_note = re.sub(r"\s+", " ", (row["official_note"] or "")).strip()
             entry = {
                 "doc_id": ref_id,
-                "rel_path": rel_path,
                 "title": title or ref_id,
                 "line_no": line_no,
                 "code_context": code_snippet,
             }
+            if rel_path and rel_path != ref_id:
+                entry["rel_path"] = rel_path
             if official_note:
+                if len(official_note) > 120:
+                    official_note = official_note[:120].rsplit(" ", 1)[0] + "..."
                 entry["official_note"] = official_note
             if doc_root_loc:
                 resolved_fields, ok = _resolve_portable_target(doc_root_loc, rel_path)

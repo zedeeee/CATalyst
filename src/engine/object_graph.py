@@ -140,6 +140,7 @@ class ObjectGraph:
         source_iface: str,
         target_iface: str,
         max_hops: int = 8,
+        compact: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
         Compute the lowest-cost directed navigation path from source_iface to target_iface.
@@ -151,13 +152,16 @@ class ObjectGraph:
             return None
 
         if src_canon == tgt_canon:
-            return {
+            out: Dict[str, Any] = {
                 "source": src_canon,
                 "target": tgt_canon,
                 "hops": 0,
-                "steps": [],
+                "route": src_canon,
                 "python_chain": src_canon.lower(),
             }
+            if not compact:
+                out["steps"] = []
+            return out
 
         tgt_low = tgt_canon.lower()
         # Heap items: (total_cost, step_count, curr_iface_lower, path_steps)
@@ -169,27 +173,31 @@ class ObjectGraph:
             if curr_low == tgt_low:
                 # Filter out subtype casts when synthesizing copy-ready Python chain
                 py_parts = ["catia" if src_canon == "Application" else src_canon[0].lower() + src_canon[1:]]
+                route_parts = [src_canon]
                 for st in steps:
                     if st["kind"] == "subtype_cast":
+                        route_parts.append(f"{st['via']}->{st['to']}")
                         continue
+                    route_parts.append(f".{st['via']}->{st['to']}")
                     if st["kind"] == "method":
                         if st["via"] == "Item":
                             py_parts.append("Item(1)")
-                        elif st["via"].startswith(("Add", "Create")):
-                            py_parts.append(f"{st['via']}(...)")
                         else:
                             py_parts.append(f"{st['via']}(...)")
                     else:
                         py_parts.append(st["via"])
 
                 real_hops = sum(1 for st in steps if st["kind"] != "subtype_cast")
-                return {
+                out = {
                     "source": src_canon,
                     "target": tgt_canon,
                     "hops": real_hops,
-                    "steps": steps,
+                    "route": " ".join(route_parts),
                     "python_chain": ".".join(py_parts),
                 }
+                if not compact:
+                    out["steps"] = steps
+                return out
 
             if cost > best_cost.get(curr_low, float("inf")):
                 continue
