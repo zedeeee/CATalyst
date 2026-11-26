@@ -12,10 +12,15 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 _WS_RE = re.compile(r"\s+")
+_DANGLING_SEE_RE = re.compile(r"(?:\s*\(\s*see(?:\s+also)?|\s+The\s+created\s+[a-z]+)\s*$", re.IGNORECASE)
 
 
 def _clean_text(text: str) -> str:
-    return _WS_RE.sub(" ", (text or "").replace("\xa0", " ")).strip()
+    s = _WS_RE.sub(" ", (text or "").replace("\xa0", " ")).strip()
+    s = _DANGLING_SEE_RE.sub("", s).strip()
+    if s.endswith("("):
+        s = s[:-1].rstrip()
+    return s
 
 
 def _extract_text_before_nested_blocks(node: Any) -> str:

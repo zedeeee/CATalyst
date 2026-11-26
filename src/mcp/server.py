@@ -3,6 +3,7 @@ MCP Server for CATalyst.
 Exposes CATIA V5 Automation API knowledge as tools to AI Assistants via the Model Context Protocol.
 """
 
+import os
 import json
 import logging
 import sys
@@ -18,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.engine.db import CatalystDB
 from src.engine.docs_db import CatalystDocsDB, resolve_docs_db_path
+from src.engine.formatter import dump_compact_json, format_interface_card
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -98,27 +100,35 @@ def get_catia_interface(
     member: str = "",
     from_interface: str = "",
     include_usecases: bool = True,
-    max_usecases: int = 3
+    max_usecases: int = 3,
+    detail: str = "auto",
+    include_base_members: bool = False,
+    output_format: str = "",
 ) -> str:
     """
-    Retrieve full documentation for a specific CATIA V5 COM Interface.
-    Supports member-level filtering, COM object graph navigation path from a root interface,
-    and usecase granularity control to save tokens.
+    Retrieve documentation for a CATIA V5 COM Interface with adaptive token efficiency.
+    Supports exact, comma-separated, and wildcard ('*Fillet*') member filtering,
+    COM object graph navigation path with terminal constructor signature, inline enum
+    expansion, and optional ultra-dense IDL signature card formatting.
     
     Args:
         name: Name of the interface (e.g., 'Pad', 'Prism', 'PartDocument', 'VisPropertySet')
         interface_name: Alias for name
         interface: Alias for name
-        member_name: Optional property or method name to filter by (e.g., 'SetShow', 'PartNumber')
+        member_name: Optional property/method filter (exact, comma-separated, or wildcard e.g. '*Fillet*')
         member: Alias for member_name
-        from_interface: Optional starting COM interface to compute shortest access chain (e.g., 'Application', 'PartDocument')
-        include_usecases: Whether to include VBScript code examples (default: True, set False for signature-only)
+        from_interface: Optional starting COM interface to compute shortest access chain (e.g., 'Application')
+        include_usecases: Whether to include code examples (default: True, set False for signature-only)
         max_usecases: Maximum usecases to return in overview mode (default: 3)
+        detail: Granularity: 'auto' (compact overview / full when member_name set), 'summary', 'compact', or 'full'
+        include_base_members: Include AnyObject/CATBaseDispatch boilerplate (Application, Name, Parent, GetItem) in overview (default False)
+        output_format: 'json' (compact JSON, default) or 'card' (ultra-dense IDL text card, ~85% smaller)
     """
     try:
         target_name = (name or interface_name or interface).strip()
         target_member = (member_name or member).strip()
         start_iface = (from_interface or "").strip()
+        eff_format = (output_format or os.environ.get("CATALYST_OUTPUT_FORMAT") or "json").strip().lower()
 
         if not target_name:
             return json.dumps({
@@ -134,7 +144,10 @@ def get_catia_interface(
             target_name,
             member_name=target_member if target_member else None,
             include_usecases=include_usecases,
-            max_usecases=max_usecases
+            max_usecases=max_usecases,
+            detail=detail,
+            include_base_members=include_base_members,
+            inline_enums=True,
         )
         if not res:
             return json.dumps({
@@ -143,16 +156,17 @@ def get_catia_interface(
             }, ensure_ascii=False)
 
         if start_iface and isinstance(res, dict) and "name" in res:
-            nav = db.get_navigation_path(res["name"], from_interface=start_iface)
+            is_compact_nav = (detail != "full") and (not target_member)
+            nav = db.get_navigation_path(res["name"], from_interface=start_iface, compact=is_compact_nav)
             if nav:
                 res["navigation_path"] = nav
 
         docs_db = get_docs_db()
-        if docs_db and isinstance(res, dict) and "name" in res:
+        if docs_db and isinstance(res, dict) and "name" in res and "member_not_found" not in res:
             try:
                 linkages = docs_db.get_api_linkages(
                     res["name"],
-                    member_name=target_member if target_member else None,
+                    member_name=target_member if (target_member and "*" not in target_member and "," not in target_member) else None,
                     max_samples=max_usecases if max_usecases > 0 else 5,
                     max_docs=max_usecases if max_usecases > 0 else 5,
                 )
@@ -163,7 +177,9 @@ def get_catia_interface(
             except Exception as le:
                 logger.debug(f"Failed to enrich interface with docs linkages: {le}")
 
-        return json.dumps(res, indent=2, ensure_ascii=False)
+        if eff_format == "card":
+            return format_interface_card(res)
+        return dump_compact_json(res)
     except Exception as e:
         logger.exception(f"Exception in get_catia_interface: {e}")
         return json.dumps({
@@ -226,21 +242,21 @@ def get_catia_usecases(
 
         if not results:
             desc = f"{target_if}.{target_mbr}" if (target_if and target_mbr) else (target_if or target_q)
-            return json.dumps({
+            return dump_compact_json({
                 "interface": target_if,
                 "member": target_mbr,
                 "source_filter": target_src,
                 "total_examples": 0,
                 "message": f"No code examples found for '{desc}'."
-            }, indent=2, ensure_ascii=False)
+            })
 
-        return json.dumps({
+        return dump_compact_json({
             "interface": target_if,
             "member": target_mbr,
             "source_filter": target_src,
             "total_examples": len(results),
             "usecases": results
-        }, indent=2, ensure_ascii=False)
+        })
     except Exception as e:
         logger.exception(f"Exception in get_catia_usecases: {e}")
         return json.dumps({
@@ -290,13 +306,13 @@ def search_catia_recipes(
             limit=limit
         )
 
-        return json.dumps({
+        return dump_compact_json({
             "query": search_query,
             "workbench_filter": target_wb,
             "source_filter": target_src,
             "total_matches": len(results),
             "recipes": results
-        }, indent=2, ensure_ascii=False)
+        })
     except Exception as e:
         logger.exception(f"Exception in search_catia_recipes: {e}")
         return json.dumps({
@@ -332,7 +348,7 @@ def get_catia_search_syntax(
             workbench=target_wb if target_wb else None,
             query_type=target_qt if target_qt else None
         )
-        return json.dumps(res, indent=2, ensure_ascii=False)
+        return dump_compact_json(res)
     except Exception as e:
         logger.exception(f"Exception in get_catia_search_syntax: {e}")
         return json.dumps({
@@ -420,7 +436,7 @@ def search_catia_api(
                     "or search_catia_samples."
                 )
 
-        return json.dumps(payload, indent=2, ensure_ascii=False)
+        return dump_compact_json(payload)
     except Exception as e:
         logger.exception(f"Exception in search_catia_api: {e}")
         return json.dumps({
@@ -472,7 +488,7 @@ def get_catia_enum(
                 "error": f"Enum '{query_desc}' not found."
             }, ensure_ascii=False)
 
-        return json.dumps(res, indent=2, ensure_ascii=False)
+        return dump_compact_json(res)
     except Exception as e:
         logger.exception(f"Exception in get_catia_enum: {e}")
         return json.dumps({
@@ -524,7 +540,7 @@ def search_catia_docs(
         if not docs_db:
             return _docs_missing_error()
         res = docs_db.search_docs(query=q, category=category, module=module, solution=solution, limit=limit)
-        return json.dumps(res, indent=2, ensure_ascii=False)
+        return dump_compact_json(res)
     except Exception as e:
         logger.exception(f"Exception in search_catia_docs: {e}")
         return json.dumps({"isError": True, "error": f"Internal Server Error in search_catia_docs: {str(e)}"}, ensure_ascii=False)
@@ -559,7 +575,7 @@ def get_catia_doc_page(
         )
         if not res:
             return json.dumps({"isError": True, "error": f"Documentation page '{target}' not found."}, ensure_ascii=False)
-        return json.dumps(res, indent=2, ensure_ascii=False)
+        return dump_compact_json(res)
     except Exception as e:
         logger.exception(f"Exception in get_catia_doc_page: {e}")
         return json.dumps({"isError": True, "error": f"Internal Server Error in get_catia_doc_page: {str(e)}"}, ensure_ascii=False)
@@ -589,7 +605,7 @@ def search_catia_settings(
         if not docs_db:
             return _docs_missing_error()
         res = docs_db.search_settings(query=query, nls_file=nls_file, options_only=options_only, limit=limit)
-        return json.dumps(res, indent=2, ensure_ascii=False)
+        return dump_compact_json(res)
     except Exception as e:
         logger.exception(f"Exception in search_catia_settings: {e}")
         return json.dumps({"isError": True, "error": f"Internal Server Error in search_catia_settings: {str(e)}"}, ensure_ascii=False)
@@ -632,7 +648,7 @@ def search_catia_samples(
             max_chars=max_chars,
             limit=limit,
         )
-        return json.dumps(res, indent=2, ensure_ascii=False)
+        return dump_compact_json(res)
     except Exception as e:
         logger.exception(f"Exception in search_catia_samples: {e}")
         return json.dumps({"isError": True, "error": f"Internal Server Error in search_catia_samples: {str(e)}"}, ensure_ascii=False)
