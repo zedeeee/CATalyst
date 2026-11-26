@@ -62,6 +62,9 @@ CATalyst 严格坚守**纯只读知识大脑定位**（不耦合任何活体 `wi
 ## 本地构建与环境隔离
 
 - **本地按需构建**：核心库（`dist/catalyst.db`）与可选离线文档库（`dist/local/catalyst_docs.db`）均在本地由本机 CATIA V5 文档生成，并由 `.gitignore` 忽略。
+- **老版本升级与数据库兼容性**：
+  - `v0.3.0` → `v0.3.1`：**无需重编数据库**（零表结构变更，直接刷新重启 MCP 进程即可生效）。
+  - `v0.2.x` → `v0.3.x`：**需重跑 `uv run python build.py`** 重建 `dist/catalyst.db` 以补齐 `object_edges` 与成员描述列（`catalyst_docs.db` 会在首次查询时自动自愈生成 `doc_api_links`，无需重解包 `Bxxdoc`）。
 - **默认虚拟环境隔离**：全流程推荐通过 `uv sync` / `uv run` 在项目专属 `.venv/` 中运行；`build.py` 与 `build_docs.py` 若检测到运行在全局 Python 下会显式发出告警。
 - **零系统侵入**：读取本机 CATIA 路径或写入本机私有配置（`dist/local/paths.json`）前先打印读写清单；**绝不修改系统 `PATH`、Windows 注册表或 CATIA 安装目录**。
 
