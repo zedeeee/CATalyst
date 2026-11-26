@@ -49,6 +49,7 @@ CATalyst enforces a **strict read-only knowledge plane** (zero live `win32com` c
 ### Key Architectural Breakthroughs
 
 - **Zero-Hallucination API Ground Truth**: Recursively fuses parent inheritance chains (`Pad -> Prism -> SketchBasedShape -> Shape -> AnyObject`), extracts full CHM member `<dl><dd>` descriptions / `Parameters:` / `Returns:` / `Role:`, builds a 6,871-edge **COM Object Model Graph** (`from_interface` shortest access chain), and supports CamelCase + bilingual CAD synonyms, bidirectional enum lookup, `Selection.Search` grammar, and `pywin32` `[out]` / `CATSafeArrayVariant` calling hints.
+- **Token-Efficient Adaptive Output & Round-Trip Elimination**: Cuts MCP output size by **58%–88%** without losing signature precision — strips JSON whitespace/empty keys, folds `AnyObject` boilerplate in overview mode (`omitted_base_members`), renders typed single-line signatures (`detail="auto|summary|compact|full"` + optional `output_format="card"` IDL cards), supports wildcard/comma member filtering (`*Fillet*`), inlines Enum definitions (`referenced_enums`), and fuses terminal creator signatures directly into `navigation_path` (`AddNewPad(iSketch: Sketch, iHeight: double) -> Pad`) to eliminate extra tool round-trips.
 - **Method-Level Calling Constraints & Caveats**: Hot-loads verified calling caveats (`data/pitfalls.json` + static `CaveatMiner`) for APIs where Dassault's underlying C++ implementation diverges from IDL declarations (e.g., `Material.PutIcon` requiring a directory path ending with `\` to prevent `E_FAIL`). Emits structured `pitfall_warning` blocks with root-cause analysis and verified safe calling patterns.
 - **Official Sample Code & Doc Linkage Reverse Index**: Direct call-site mapping with return-type propagation across 2,415 sample scripts and 12,179 doc pages, uncovering 14,508 verified call sites and unfreezing 78+ previously unreferenced interfaces with exact line-number context.
 - **2.24 GB Offline Docs Compressed to Sub-10ms FTS5**: Multiprocess `lxml` ETL parses 12,500+ HTML pages in seconds, extracts Dassault's native `CATIA_P3_TOC.xml` hierarchy, `<a name="ix-...">` index tags, `<a name="ToolsOptions...">` anchors, `awarning.gif` official pitfalls, `linked_docs` cross-references, `linked_files`, and content screenshots — stored via SQLite FTS5 External Content Tables (no duplicate text storage) with BM25 column weighting and CamelCase fallback (`FavoriteCatalog` -> `Favorite Catalog`).
@@ -181,6 +182,8 @@ Optional environment overrides:
 - `CATALYST_DB_PATH`: Custom path to `catalyst.db`.
 - `CATALYST_DOCS_DB_PATH`: Custom path to a shared/relocated `catalyst_docs.db`.
 - `CATALYST_7Z_PATH`: Custom path to `7z`/`7za` executable.
+- `CATALYST_OUTPUT_FORMAT`: Default format for `get_catia_interface` (`json` default compact JSON, or `card` for ultra-dense IDL text cards).
+- `CATALYST_PRETTY_JSON`: Set to `1` to re-enable `indent=2` JSON formatting for human debugging.
 
 ---
 
@@ -188,7 +191,7 @@ Optional environment overrides:
 
 | Category | Tool | Purpose |
 | :--- | :--- | :--- |
-| **COM API** | `get_catia_interface` | Full interface signatures with inherited members (`declared_in`), `pywin32` `[out]` hints, implementation caveats (`pitfall_warning`), and enriched official doc/sample linkages (`linked_official_docs`, `linked_sample_scripts`) |
+| **COM API** | `get_catia_interface` | Adaptive interface lookup (`detail`: `auto`/`summary`/`compact`/`full`; `output_format`: `json`/`card`): supports exact/comma/wildcard `member_name` filtering (`*Fillet*`), base-member folding, `from_interface` navigation with terminal constructor signature, inline `referenced_enums`, implementation caveats (`pitfall_warning`), and linked official docs/samples |
 | **COM API** | `search_catia_api` | FTS5 BM25 search across interfaces, enums, properties, and methods (with reverse host lookup & 0-hit doc hint) |
 | **COM API** | `get_catia_enum` | Bidirectional enum lookup by enum name, integer value, or member name |
 | **COM API** | `get_catia_usecases` | Dual-track official VBScript tutorials + community Python `win32com` examples |
@@ -208,6 +211,9 @@ Every MCP capability has a symmetric command in `catalyst_cli.py`:
 ```bash
 # Core COM API & Recipes
 uv run python catalyst_cli.py get Pad --member GetDirection
+uv run python catalyst_cli.py get Pad --from Application --format card --no-usecases
+uv run python catalyst_cli.py get HybridShapeFactory --member "*Fillet*" --format card
+uv run python catalyst_cli.py path Pad --from Application
 uv run python catalyst_cli.py search "PartNumber" --type property
 uv run python catalyst_cli.py enum CatProductSource --value 1
 uv run python catalyst_cli.py recipe "CreateCatalogFromcsv"

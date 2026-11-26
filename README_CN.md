@@ -49,6 +49,7 @@ CATalyst 严格坚守**纯只读知识大脑定位**（不耦合任何活体 `wi
 ### 核心能力与突破
 
 - **零幻觉 COM API 真理源**：自动递归融合继承链（`Pad -> Prism -> SketchBasedShape -> Shape -> AnyObject`）并完整提取 CHM 成员 `<dl><dd>` 说明 / `Parameters:` / `Returns:` / `Role:`；内置 6,871 条边构成的 **COM 对象导航图**（`from_interface` 最短调用链寻路），支持驼峰切词与 CAD 双语同义词检索、Enum 双向反查、`Selection.Search` 精确语法及 `pywin32` `[out]` / `CATSafeArrayVariant` 提示。
+- **自适应高密输出与零往返直出**：单次接口返回体积压缩 **58%–88%** 且零签名精度损失——默认去缩进与空值键、Overview 自动折叠 `AnyObject` 样板（`omitted_base_members`）并将成员降维为单行强类型签名（`detail="auto|summary|compact|full"` + 可选 `output_format="card"` IDL 极简卡片）；支持通配符/逗号成员过滤（`*Fillet*`）、自动内联 `referenced_enums` 枚举值、并在 `navigation_path` 直接融合终点构造器参数签名（如 `AddNewPad(iSketch: Sketch, iHeight: double) -> Pad`），消除额外工具往返。
 - **方法级调用约束与已知实现差异 (Known Implementation Caveats)**：通过外置规则库 `data/pitfalls.json` 与静态挖掘器 `CaveatMiner`，针对达索底层实现与 IDL 声明存在契约背离的高危接口（如 `Material.PutIcon` 强求以反斜杠结尾的目录路径防 `E_FAIL`、批处理无头限制、文件锁死等）自动挂载 `pitfall_warning` 与安全调用范式。
 - **官方源码与用例双向穿透引擎 (Doc & Sample Code Linkage)**：结合返回值类型传播与散文降噪，建立 2,415 个官方样板宏与 12,179 篇 HTML 的反向索引，定位 14,508 处实战调用行号并解冻 78+ 个原零用例接口。
 - **2.24 GB 官方离线手册秒级建库、亚 10ms 检索**：多进程 `lxml` 流水线数秒解析 12,500+ 页 HTML，原生榨干达索 `CATIA_P3_TOC.xml` 产品分类树、`<a name="ix-...">` 官方索引词、`<a name="ToolsOptions...">` 选项锚点、`awarning.gif` 官方避坑警告、页面间 `linked_docs` 跳转、`linked_files` 关联样板及有效截图；基于 SQLite FTS5 External Content Table（正文零双份冗余）+ BM25 列权重倾斜 + CamelCase 自动切词回退（搜 `FavoriteCatalog` 自动命中 `Favorite Catalog`）。
@@ -181,6 +182,8 @@ uv run python build_docs.py \
 - `CATALYST_DB_PATH`：覆写核心 `catalyst.db` 路径。
 - `CATALYST_DOCS_DB_PATH`：覆写或指向团队共享的 `catalyst_docs.db` 路径。
 - `CATALYST_7Z_PATH`：手动指定 `7z`/`7za` 可执行文件路径。
+- `CATALYST_OUTPUT_FORMAT`：设置 `get_catia_interface` 默认输出格式（默认 `json` 紧凑格式，或设为 `card` 启用极简 IDL 纯文本卡片）。
+- `CATALYST_PRETTY_JSON`：设为 `1` 时恢复 `indent=2` JSON 缩进输出，便于人工排查。
 
 ---
 
@@ -188,7 +191,7 @@ uv run python build_docs.py \
 
 | 分类 | Tool | 职责 |
 | :--- | :--- | :--- |
-| **COM API** | `get_catia_interface` | 获取接口完整签名（含继承成员 `declared_in`）、`pywin32` `[out]` 解包提示、方法级实现约束 (`pitfall_warning`)，以及关联的官方文档与样板宏源码 (`linked_official_docs`, `linked_sample_scripts`) |
+| **COM API** | `get_catia_interface` | 自适应接口查询（`detail`: `auto`/`summary`/`compact`/`full`；`output_format`: `json`/`card`）：支持精确/逗号/通配符（`*Fillet*`）过滤、基类样板折叠、`from_interface` 寻路直出终点构造器签名、自动内联 `referenced_enums`、实现约束 (`pitfall_warning`) 及官方文档/样板关联 |
 | **COM API** | `search_catia_api` | FTS5 BM25 检索接口/枚举/属性/方法（附宿主接口反查与 0 命中文档引导） |
 | **COM API** | `get_catia_enum` | 枚举双向查询（按名称、数值索引或成员名反查） |
 | **COM API** | `get_catia_usecases` | 双轨查询官方 VBScript 示例与社区 Python `win32com` 实例 |
@@ -208,6 +211,9 @@ uv run python build_docs.py \
 ```bash
 # 核心 COM API 与实战 Recipe
 uv run python catalyst_cli.py get Pad --member GetDirection
+uv run python catalyst_cli.py get Pad --from Application --format card --no-usecases
+uv run python catalyst_cli.py get HybridShapeFactory --member "*Fillet*" --format card
+uv run python catalyst_cli.py path Pad --from Application
 uv run python catalyst_cli.py search "PartNumber" --type property
 uv run python catalyst_cli.py enum CatProductSource --value 1
 uv run python catalyst_cli.py recipe "CreateCatalogFromcsv"
