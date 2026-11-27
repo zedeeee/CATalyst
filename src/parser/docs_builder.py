@@ -24,12 +24,14 @@ except ImportError:
 
 from .docs_parser import (
     build_module_sample_lookup,
+    classify_catnls_entry,
     collect_samples,
     detect_release_from_path,
     iter_doc_html_tasks,
     normalize_doc_root,
     normalize_install_root,
     parse_catnls_file,
+    parse_catrsc_file,
     parse_doc_html_task,
     parse_toc_xml,
 )
@@ -122,11 +124,13 @@ class CatalystDocsBuilder:
                 file_stem TEXT NOT NULL,
                 nls_key TEXT NOT NULL,
                 text TEXT NOT NULL,
-                is_option_file INTEGER DEFAULT 0
+                is_option_file INTEGER DEFAULT 0,
+                entry_kind TEXT DEFAULT 'ui'
             );
 
             CREATE INDEX idx_catnls_stem ON catnls_entries(file_stem);
             CREATE INDEX idx_catnls_opt ON catnls_entries(is_option_file);
+            CREATE INDEX idx_catnls_kind ON catnls_entries(entry_kind);
 
             CREATE VIRTUAL TABLE catnls_fts USING fts5(
                 file_stem,
@@ -332,19 +336,32 @@ class CatalystDocsBuilder:
                 return 0
 
         nls_files = sorted(msg_dir.glob("*.CATNls"))
-        logger.info(f"Indexing {len(nls_files)} CATNls files from {msg_dir}...")
+        rsc_files = sorted(msg_dir.glob("*.CATRsc"))
+        logger.info(f"Indexing {len(nls_files)} CATNls and {len(rsc_files)} CATRsc files from {msg_dir}...")
 
         cur = conn.cursor()
         batch: List[tuple] = []
         inserted = 0
 
         for fp in tqdm(nls_files, desc="Parsing CATNls"):
-            rows = parse_catnls_file(fp)
-            if rows:
-                batch.extend(rows)
+            for stem, key, val, is_opt in parse_catnls_file(fp):
+                kind = classify_catnls_entry(stem, key, is_opt)
+                batch.append((stem, key, val, is_opt, kind))
             if len(batch) >= 2000:
                 cur.executemany(
-                    "INSERT INTO catnls_entries (file_stem, nls_key, text, is_option_file) VALUES (?, ?, ?, ?)",
+                    "INSERT INTO catnls_entries (file_stem, nls_key, text, is_option_file, entry_kind) VALUES (?, ?, ?, ?, ?)",
+                    batch,
+                )
+                inserted += len(batch)
+                batch.clear()
+
+        for fp in rsc_files:
+            rsc_rows = parse_catrsc_file(fp)
+            if rsc_rows:
+                batch.extend(rsc_rows)
+            if len(batch) >= 2000:
+                cur.executemany(
+                    "INSERT INTO catnls_entries (file_stem, nls_key, text, is_option_file, entry_kind) VALUES (?, ?, ?, ?, ?)",
                     batch,
                 )
                 inserted += len(batch)
@@ -352,7 +369,7 @@ class CatalystDocsBuilder:
 
         if batch:
             cur.executemany(
-                "INSERT INTO catnls_entries (file_stem, nls_key, text, is_option_file) VALUES (?, ?, ?, ?)",
+                "INSERT INTO catnls_entries (file_stem, nls_key, text, is_option_file, entry_kind) VALUES (?, ?, ?, ?, ?)",
                 batch,
             )
             inserted += len(batch)

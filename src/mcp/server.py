@@ -364,6 +364,9 @@ def search_catia_api(
     keyword: str = "",
     item_type: str = "all",
     type: str = "",
+    include_catnls: bool = False,
+    include_cross_links: bool = True,
+    detail: str = "full",
     limit: int = 15
 ) -> str:
     """
@@ -375,6 +378,9 @@ def search_catia_api(
         keyword: Alias for query
         item_type: Filter by 'all', 'interface', 'enum', 'property', or 'method'
         type: Alias for item_type
+        include_catnls: Probe *.CATNls/*.CATRsc when 0 COM hits (default False; set True to look up Command Header IDs/shortcuts)
+        include_cross_links: Include host_interfaces_summary, related_recipes, and related_docs (default True)
+        detail: Result granularity: 'full' (default) or 'compact' (omits descriptions)
         limit: Max results to return
     """
     try:
@@ -391,11 +397,11 @@ def search_catia_api(
         if not db:
             return _core_db_missing_error()
 
-        results = db.search(search_query, item_type=filter_type, limit=limit)
+        results = db.search(search_query, item_type=filter_type, limit=limit, detail=detail)
         
         # If searching for property/method or single member query, check host interface aggregation
         reverse_hosts = None
-        if filter_type in ("all", "property", "method"):
+        if include_cross_links and filter_type in ("all", "property", "method"):
             member_lookup = db.get_interfaces_by_member(search_query, member_type=filter_type if filter_type != "all" else None)
             if member_lookup["total_host_interfaces"] > 0:
                 reverse_hosts = member_lookup
@@ -409,8 +415,8 @@ def search_catia_api(
         if reverse_hosts:
             payload["host_interfaces_summary"] = reverse_hosts
 
-        # Cross-link curated community recipes & offline docs regardless of strict 0-hit gate
-        if filter_type == "all":
+        # Cross-link curated community recipes & offline docs when enabled
+        if include_cross_links and filter_type == "all":
             comm_hints = db.search_recipes(search_query, source="community", limit=2)
             if comm_hints:
                 payload["related_recipes"] = [
@@ -419,21 +425,35 @@ def search_catia_api(
                 ]
 
         docs_db = get_docs_db()
-        if docs_db is not None and (len(results) == 0 or filter_type == "all"):
-            try:
-                doc_hits = docs_db.search_docs(search_query, limit=2)
-                if doc_hits.get("results"):
-                    payload["related_docs"] = [
-                        {"doc_id": d["doc_id"], "title": d["title"], "category": d["category"]}
-                        for d in doc_hits["results"]
-                    ]
-            except Exception:
-                pass
+        if docs_db is not None and (len(results) == 0 or (include_cross_links and filter_type == "all")):
+            if include_cross_links:
+                try:
+                    doc_hits = docs_db.search_docs(search_query, limit=2)
+                    if doc_hits.get("results"):
+                        payload["related_docs"] = [
+                            {"doc_id": d["doc_id"], "title": d["title"], "category": d["category"]}
+                            for d in doc_hits["results"]
+                        ]
+                except Exception:
+                    pass
             if len(results) == 0 and not reverse_hosts:
+                if include_catnls and " " not in search_query and len(search_query) >= 3:
+                    try:
+                        nls_hits = docs_db.search_settings(
+                            query=search_query,
+                            options_only=False,
+                            scope="all",
+                            include_related_docs=False,
+                            limit=4,
+                        )
+                        if nls_hits.get("nls_entries"):
+                            payload["related_catnls_headers"] = nls_hits["nls_entries"]
+                    except Exception:
+                        pass
                 payload["hint"] = (
-                    "No COM Automation API matches found. If this is a GUI-only feature, batch protocol, "
-                    "or Tools>Options/.CATSettings item, try search_catia_docs, search_catia_settings, "
-                    "or search_catia_samples."
+                    "No COM Automation API matches found. For GUI Command Header IDs or shortcuts, "
+                    "call search_catia_settings(scope='headers'|'accelerators') or pass include_catnls=True; "
+                    "for Tools>Options or batch protocols, try search_catia_docs or search_catia_samples."
                 )
 
         return dump_compact_json(payload)
@@ -518,6 +538,7 @@ def search_catia_docs(
     category: str = "all",
     module: str = "",
     solution: str = "",
+    include_snippet: bool = True,
     limit: int = 10,
 ) -> str:
     """
@@ -530,6 +551,7 @@ def search_catia_docs(
         category: Filter by 'all' (default), 'user_guide', 'options', or 'automation_doc'
         module: Optional module directory filter (e.g., 'cceug_C2', 'bascuctg_C2', 'cfyugpkt_C2')
         solution: Optional CATIA solution filter (e.g., 'Infrastructure', 'Mechanical Design')
+        include_snippet: Include text snippet in each hit (default True; set False for ultra-compact doc_id index)
         limit: Max results to return (default 10, max 30)
     """
     try:
@@ -539,7 +561,14 @@ def search_catia_docs(
         docs_db = get_docs_db()
         if not docs_db:
             return _docs_missing_error()
-        res = docs_db.search_docs(query=q, category=category, module=module, solution=solution, limit=limit)
+        res = docs_db.search_docs(
+            query=q,
+            category=category,
+            module=module,
+            solution=solution,
+            include_snippet=include_snippet,
+            limit=limit,
+        )
         return dump_compact_json(res)
     except Exception as e:
         logger.exception(f"Exception in search_catia_docs: {e}")
@@ -552,6 +581,8 @@ def get_catia_doc_page(
     section: str = "",
     include_images: bool = True,
     max_chars: int = 12000,
+    start_line: int = 0,
+    end_line: int = 0,
 ) -> str:
     """
     Retrieve the cleaned text, official warnings, options anchors, and embedded screenshot paths
@@ -562,6 +593,8 @@ def get_catia_doc_page(
         section: Optional heading substring to slice only a specific section and save tokens
         include_images: Include relative and resolved local absolute paths of content screenshots (default True)
         max_chars: Maximum characters of body_text to return (default 12000)
+        start_line: Optional 1-based start line for slicing long script/source pages
+        end_line: Optional 1-based end line for slicing long script/source pages
     """
     try:
         target = (doc_id or "").strip()
@@ -571,7 +604,12 @@ def get_catia_doc_page(
         if not docs_db:
             return _docs_missing_error()
         res = docs_db.get_doc_page(
-            doc_id=target, section=section, include_images=include_images, max_chars=max_chars
+            doc_id=target,
+            section=section,
+            include_images=include_images,
+            max_chars=max_chars,
+            start_line=start_line,
+            end_line=end_line,
         )
         if not res:
             return json.dumps({"isError": True, "error": f"Documentation page '{target}' not found."}, ensure_ascii=False)
@@ -586,17 +624,24 @@ def search_catia_settings(
     query: str = "",
     nls_file: str = "",
     options_only: bool = True,
+    scope: str = "all",
+    include_related_docs: Optional[bool] = None,
     limit: int = 15,
 ) -> str:
     """
-    Search CATIA V5 msgcatalog (*.CATNls) UI labels/keys and cross-link Tools>Options documentation pages.
-    Useful for mapping UI wording to .CATSettings attributes and CATBatGenXMLSet/CATBatImpXMLSet workflows.
+    Search CATIA V5 msgcatalog (*.CATNls / *.CATRsc) across scoped targets:
+    - scope='options': Tools>Options & .CATSettings keys (+ related_option_docs & XML hint)
+    - scope='headers': GUI Command Header IDs (e.g., 'OpenInNewWnd') without Options noise
+    - scope='accelerators': Keyboard shortcuts from *.CATRsc (e.g., 'Ctrl+N', 'Ctrl+O')
+    - scope='all': Combined search (honors options_only)
 
     Args:
-        query: English UI wording or option key substring (e.g., 'ResolvedComponents', 'dynamic resolution', 'FavoriteCatalog')
-        nls_file: Optional CATNls file stem filter (e.g., 'CATCuiOptionEditor')
-        options_only: Prioritize option/setting/LongHelp entries first (default True; auto-relaxes if 0 hits)
-        limit: Max CATNls entries to return (default 15, max 50)
+        query: UI wording, Command Header ID, shortcut ('Ctrl+N'), or option key
+        nls_file: Optional file stem filter (e.g., 'CATCuiOptionEditor', 'CATFileHeader')
+        options_only: Used when scope='all' to prioritize option entries (default True)
+        scope: Scoped filter: 'all', 'options', 'headers', or 'accelerators'
+        include_related_docs: Override whether to attach related_option_docs & xml_roundtrip_hint (default: True for options/all, False for headers/accelerators)
+        limit: Max entries to return (default 15, max 50)
     """
     try:
         if not (query or "").strip() and not (nls_file or "").strip():
@@ -604,7 +649,14 @@ def search_catia_settings(
         docs_db = get_docs_db()
         if not docs_db:
             return _docs_missing_error()
-        res = docs_db.search_settings(query=query, nls_file=nls_file, options_only=options_only, limit=limit)
+        res = docs_db.search_settings(
+            query=query,
+            nls_file=nls_file,
+            options_only=options_only,
+            scope=scope,
+            include_related_docs=include_related_docs,
+            limit=limit,
+        )
         return dump_compact_json(res)
     except Exception as e:
         logger.exception(f"Exception in search_catia_settings: {e}")
@@ -616,6 +668,7 @@ def search_catia_samples(
     query: str = "",
     ext: str = "",
     module: str = "",
+    source: str = "all",
     include_content: bool = False,
     include_binary: bool = True,
     max_chars: int = 6000,
@@ -630,6 +683,7 @@ def search_catia_samples(
         query: Keywords matching filename, module, path, or text sample content (e.g., 'BatchCatalog', 'PktRod', 'FHC_M03')
         ext: Optional extension filter (e.g., '.csv', '.catscript', '.catpart', '.catalog')
         module: Optional module directory filter (e.g., 'cceug_C2', 'cfyugpkt_C2')
+        source: Source scope: 'all' (default), 'doc_samples', or 'startup' (win_b64/startup/)
         include_content: Return full text content for non-binary samples (default False)
         include_binary: Include binary CAD/Excel samples indexed by relative path (default True)
         max_chars: Max characters per text sample when include_content=True (default 6000)
@@ -643,6 +697,7 @@ def search_catia_samples(
             query=query,
             ext=ext,
             module=module,
+            source=source,
             include_content=include_content,
             include_binary=include_binary,
             max_chars=max_chars,

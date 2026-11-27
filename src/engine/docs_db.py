@@ -22,7 +22,7 @@ from src.engine.local_config import (
     resolve_doc_root_location as _resolve_doc_root_5tier,
     resolve_install_root_location as _resolve_install_root_5tier,
 )
-from src.parser.docs_parser import BINARY_SAMPLE_EXTS
+from src.parser.docs_parser import BINARY_SAMPLE_EXTS, parse_catrsc_file
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +161,8 @@ class CatalystDocsDB:
             )
         self.db_path = resolved
         self._local = threading.local()
+        self._catnls_lock = threading.Lock()
+        self._catnls_ready = False
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -187,6 +189,7 @@ class CatalystDocsDB:
         category: str = "all",
         module: str = "",
         solution: str = "",
+        include_snippet: bool = True,
         limit: int = 10,
     ) -> Dict[str, Any]:
         """Full-text BM25 search across indexed CATIA V5 HTML documentation."""
@@ -234,7 +237,11 @@ class CatalystDocsDB:
                     p.warnings,
                     p.images_json{extra_cols},
                     snippet(doc_pages_fts, 5, '[', ']', '...', 24) AS snippet,
-                    bm25(doc_pages_fts, 10.0, 8.0, 8.0, 5.0, 4.0, 1.0) AS score
+                    (
+                        bm25(doc_pages_fts, 10.0, 8.0, 8.0, 5.0, 4.0, 1.0)
+                        + CASE WHEN p.doc_id LIKE '%Source%.htm' THEN 4.0 ELSE 0.0 END
+                        + CASE WHEN p.category IN ('options', 'user_guide') THEN -1.5 ELSE 0.0 END
+                    ) AS score
                 FROM doc_pages_fts
                 JOIN doc_pages p ON p.id = doc_pages_fts.rowid
                 WHERE {' AND '.join(where_parts)}
@@ -280,32 +287,45 @@ class CatalystDocsDB:
             warn_preview = (r["warnings"] or "").strip()
             if len(warn_preview) > 220:
                 warn_preview = warn_preview[:220] + "..."
-            results.append(
-                {
-                    "doc_id": r["doc_id"],
-                    "title": r["title"],
-                    "module": r["module"],
-                    "product_name": r["product_name"],
-                    "solution": r["solution"],
-                    "category": r["category"],
-                    "options_anchors": r["options_anchors"] or "",
-                    "summary": r["summary"] or "",
-                    "warnings_preview": warn_preview,
-                    "snippet": r["snippet"] or "",
-                    "image_count": len(imgs),
-                    "linked_file_count": len(lfiles),
-                }
-            )
+            clean_snip = re.sub(r"\s+", " ", (r["snippet"] or "")).strip()
 
-        return {
+            item: Dict[str, Any] = {
+                "doc_id": r["doc_id"],
+                "title": r["title"],
+                "module": r["module"],
+                "category": r["category"],
+            }
+            if include_snippet and clean_snip:
+                item["snippet"] = clean_snip
+            if r["product_name"] and r["product_name"] != r["module"]:
+                item["product_name"] = r["product_name"]
+            if r["solution"] and not (r["category"] == "automation_doc" and r["solution"] == "Automation Documentation"):
+                item["solution"] = r["solution"]
+            if r["options_anchors"]:
+                item["options_anchors"] = r["options_anchors"]
+            if r["summary"]:
+                item["summary"] = r["summary"]
+            if warn_preview:
+                item["warnings_preview"] = warn_preview
+            if imgs:
+                item["image_count"] = len(imgs)
+            if lfiles:
+                item["linked_file_count"] = len(lfiles)
+            results.append(item)
+
+        out: Dict[str, Any] = {
             "catia_release": meta.get("catia_release", "unknown"),
             "query": query,
-            "category_filter": cat_norm,
-            "module_filter": mod_norm or None,
-            "or_fallback_used": fallback_used,
             "total_matches": len(results),
             "results": results,
         }
+        if cat_norm != "all":
+            out["category_filter"] = cat_norm
+        if mod_norm:
+            out["module_filter"] = mod_norm
+        if fallback_used:
+            out["or_fallback_used"] = True
+        return out
 
     def get_doc_page(
         self,
@@ -313,6 +333,8 @@ class CatalystDocsDB:
         section: str = "",
         include_images: bool = True,
         max_chars: int = 12000,
+        start_line: int = 0,
+        end_line: int = 0,
     ) -> Optional[Dict[str, Any]]:
         """
         Retrieve a single official documentation page.
@@ -352,6 +374,12 @@ class CatalystDocsDB:
                         end_idx = idx
                         break
                 body = "\n".join(lines[start_idx:end_idx]).strip()
+
+        if start_line > 0 or end_line > 0:
+            lines = body.splitlines()
+            s_idx = max(0, start_line - 1) if start_line > 0 else 0
+            e_idx = end_line if end_line > 0 else len(lines)
+            body = "\n".join(lines[s_idx:e_idx])
 
         truncated = False
         if max_chars > 0 and len(body) > max_chars:
@@ -435,34 +463,115 @@ class CatalystDocsDB:
 
         return result
 
+    def _ensure_catnls_kind_and_accelerators(self, meta: Dict[str, str], need_accelerators: bool = False) -> None:
+        """
+        Self-heal legacy catalyst_docs.db:
+        1) Add and backfill `entry_kind` ('option'|'header'|'accelerator'|'ui') if missing.
+        2) Incrementally ingest .Accelerator shortcuts from local *.CATRsc files if missing.
+        """
+        with self._catnls_lock:
+            cur = self.conn.cursor()
+            if not self._catnls_ready:
+                if not self._has_column("catnls_entries", "entry_kind"):
+                    cur.execute("ALTER TABLE catnls_entries ADD COLUMN entry_kind TEXT DEFAULT 'ui'")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_catnls_kind ON catnls_entries(entry_kind)")
+                    cur.execute("UPDATE catnls_entries SET entry_kind = 'accelerator' WHERE LOWER(nls_key) LIKE '%.accelerator'")
+                    cur.execute(
+                        "UPDATE catnls_entries SET entry_kind = 'option' "
+                        "WHERE entry_kind = 'ui' AND (is_option_file = 1 OR LOWER(nls_key) LIKE '%option%')"
+                    )
+                    cur.execute(
+                        "UPDATE catnls_entries SET entry_kind = 'header' "
+                        "WHERE entry_kind = 'ui' AND ("
+                        "LOWER(file_stem) LIKE '%header' OR LOWER(file_stem) LIKE '%cmd' "
+                        "OR LOWER(nls_key) LIKE '%.title' OR LOWER(nls_key) LIKE '%.help' "
+                        "OR LOWER(nls_key) LIKE '%.shorthelp' OR LOWER(nls_key) LIKE '%.longhelp' "
+                        "OR LOWER(nls_key) LIKE '%.undotitle')"
+                    )
+                    self.conn.commit()
+                self._catnls_ready = True
+
+            if need_accelerators:
+                has_acc = cur.execute(
+                    "SELECT 1 FROM catnls_entries WHERE entry_kind = 'accelerator' LIMIT 1"
+                ).fetchone()
+                if not has_acc:
+                    install_root = resolve_runtime_install_root(meta)
+                    if isinstance(install_root, Path):
+                        msg_dir = install_root / "resources" / "msgcatalog"
+                        if not msg_dir.exists() and list(install_root.glob("*.CATRsc")):
+                            msg_dir = install_root
+                        if msg_dir.exists():
+                            rsc_rows = []
+                            for fp in sorted(msg_dir.glob("*.CATRsc")):
+                                rsc_rows.extend(parse_catrsc_file(fp))
+                            if rsc_rows:
+                                cur.executemany(
+                                    "INSERT INTO catnls_entries (file_stem, nls_key, text, is_option_file, entry_kind) "
+                                    "VALUES (?, ?, ?, ?, ?)",
+                                    rsc_rows,
+                                )
+                                cur.execute("INSERT INTO catnls_fts(catnls_fts) VALUES('rebuild')")
+                                self.conn.commit()
+
     def search_settings(
         self,
         query: str = "",
         nls_file: str = "",
         options_only: bool = True,
+        scope: str = "all",
+        include_related_docs: Optional[bool] = None,
         limit: int = 15,
     ) -> Dict[str, Any]:
-        """Search CATNls UI option labels/keys and cross-link matching Tools>Options doc pages."""
+        """
+        Search CATNls/CATRsc catalog entries across scoped targets:
+        - scope='all': default broad search (honors options_only)
+        - scope='options': Tools>Options & .CATSettings keys (+ related_option_docs & XML hint)
+        - scope='headers': GUI Command Header IDs (e.g. OpenInNewWnd, CATFileHeader) without Options noise
+        - scope='accelerators': Keyboard shortcuts from *.CATRsc (e.g. Ctrl+N, Ctrl+O)
+        """
         meta = self.get_meta()
+        scope_norm = (scope or "all").strip().lower()
+        if scope_norm not in ("all", "options", "headers", "accelerators"):
+            scope_norm = "all"
+
+        self._ensure_catnls_kind_and_accelerators(meta, need_accelerators=(scope_norm in ("accelerators", "all") and "+" in (query or "")))
+
         clamped = max(1, min(limit, 50))
         q = (query or "").strip()
         nf = (nls_file or "").strip()
-        if nf.lower().endswith(".catnls"):
-            nf = nf[:-7]
+        for ext_sfx in (".catnls", ".catrsc"):
+            if nf.lower().endswith(ext_sfx):
+                nf = nf[: -len(ext_sfx)]
 
         cur = self.conn.cursor()
         nls_rows: List[sqlite3.Row] = []
 
+        scope_clause = ""
+        if scope_norm == "options":
+            scope_clause = "c.entry_kind = 'option'"
+        elif scope_norm == "headers":
+            scope_clause = "c.entry_kind = 'header'"
+        elif scope_norm == "accelerators":
+            scope_clause = "c.entry_kind = 'accelerator'"
+        elif options_only:
+            scope_clause = "c.is_option_file = 1"
+
         if nf and not q:
+            where_nf = ["LOWER(file_stem) LIKE LOWER(?)"]
+            params_nf: List[Any] = [f"%{nf}%"]
+            if scope_clause:
+                where_nf.append(scope_clause.replace("c.", ""))
+            params_nf.append(clamped)
             cur.execute(
-                """
-                SELECT file_stem, nls_key, text, is_option_file
+                f"""
+                SELECT file_stem, nls_key, text, is_option_file, entry_kind
                 FROM catnls_entries
-                WHERE LOWER(file_stem) LIKE LOWER(?)
+                WHERE {' AND '.join(where_nf)}
                 ORDER BY id ASC
                 LIMIT ?
                 """,
-                (f"%{nf}%", clamped),
+                params_nf,
             )
             nls_rows = cur.fetchall()
         elif q:
@@ -473,19 +582,31 @@ class CatalystDocsDB:
                 if nf:
                     where.append("LOWER(c.file_stem) LIKE LOWER(?)")
                     params.append(f"%{nf}%")
-                if options_only:
-                    where.append("c.is_option_file = 1")
+                if scope_clause:
+                    where.append(scope_clause)
                 params.append(clamped)
-                sql = f"""
-                    SELECT c.file_stem, c.nls_key, c.text, c.is_option_file,
-                           bm25(catnls_fts, 4.0, 6.0, 2.0) AS score
-                    FROM catnls_fts
-                    JOIN catnls_entries c ON c.id = catnls_fts.rowid
-                    WHERE {' AND '.join(where)}
-                    ORDER BY score ASC
-                    LIMIT ?
-                """
-                cur.execute(sql, params)
+                if scope_norm == "accelerators":
+                    sql = f"""
+                        SELECT c.file_stem, c.nls_key, c.text, c.is_option_file, c.entry_kind,
+                               bm25(catnls_fts, 4.0, 6.0, 2.0) AS score
+                        FROM catnls_fts
+                        JOIN catnls_entries c ON c.id = catnls_fts.rowid
+                        WHERE {' AND '.join(where)}
+                        ORDER BY CASE WHEN LOWER(c.text) = LOWER(?) THEN 0 ELSE 1 END, score ASC
+                        LIMIT ?
+                    """
+                    cur.execute(sql, params[:-1] + [q, params[-1]])
+                else:
+                    sql = f"""
+                        SELECT c.file_stem, c.nls_key, c.text, c.is_option_file, c.entry_kind,
+                               bm25(catnls_fts, 4.0, 6.0, 2.0) AS score
+                        FROM catnls_fts
+                        JOIN catnls_entries c ON c.id = catnls_fts.rowid
+                        WHERE {' AND '.join(where)}
+                        ORDER BY score ASC
+                        LIMIT ?
+                    """
+                    cur.execute(sql, params)
                 nls_rows = cur.fetchall()
 
                 if not nls_rows:
@@ -497,11 +618,11 @@ class CatalystDocsDB:
                             cur.execute(sql, camel_params)
                             nls_rows = cur.fetchall()
 
-                if not nls_rows and options_only:
+                if not nls_rows and scope_norm == "all" and options_only:
                     where_relaxed = [w for w in where if w != "c.is_option_file = 1"]
                     cur.execute(
                         f"""
-                        SELECT c.file_stem, c.nls_key, c.text, c.is_option_file,
+                        SELECT c.file_stem, c.nls_key, c.text, c.is_option_file, c.entry_kind,
                                bm25(catnls_fts, 4.0, 6.0, 2.0) AS score
                         FROM catnls_fts
                         JOIN catnls_entries c ON c.id = catnls_fts.rowid
@@ -512,13 +633,34 @@ class CatalystDocsDB:
                         params,
                     )
                     nls_rows = cur.fetchall()
-                if not nls_rows:
+
+                if not nls_rows and scope_norm == "accelerators":
+                    where_like = ["(LOWER(c.text) LIKE LOWER(?) OR LOWER(c.nls_key) LIKE LOWER(?))"]
+                    like_params: List[Any] = [f"%{q}%", f"%{q}%"]
+                    if nf:
+                        where_like.append("LOWER(c.file_stem) LIKE LOWER(?)")
+                        like_params.append(f"%{nf}%")
+                    where_like.append("c.entry_kind = 'accelerator'")
+                    like_params.append(clamped)
+                    cur.execute(
+                        f"""
+                        SELECT c.file_stem, c.nls_key, c.text, c.is_option_file, c.entry_kind
+                        FROM catnls_entries c
+                        WHERE {' AND '.join(where_like)}
+                        ORDER BY c.id ASC
+                        LIMIT ?
+                        """,
+                        like_params,
+                    )
+                    nls_rows = cur.fetchall()
+
+                if not nls_rows and scope_norm in ("all", "options"):
                     for alt_q in expand_bilingual_queries(q):
                         alt_fts = _format_fts_tokens(alt_q, joiner=" OR ")
                         if alt_fts:
                             cur.execute(
                                 """
-                                SELECT c.file_stem, c.nls_key, c.text, c.is_option_file,
+                                SELECT c.file_stem, c.nls_key, c.text, c.is_option_file, c.entry_kind,
                                        bm25(catnls_fts, 4.0, 6.0, 2.0) AS score
                                 FROM catnls_fts
                                 JOIN catnls_entries c ON c.id = catnls_fts.rowid
@@ -532,9 +674,10 @@ class CatalystDocsDB:
                             if nls_rows:
                                 break
 
+        show_related = include_related_docs if include_related_docs is not None else (scope_norm in ("all", "options"))
         related_docs: List[Dict[str, Any]] = []
         doc_query = q or nf
-        if doc_query:
+        if show_related and doc_query:
             doc_res = self.search_docs(doc_query, category="options", limit=5)
             related_docs = [
                 {
@@ -546,9 +689,10 @@ class CatalystDocsDB:
                 for d in doc_res["results"]
             ]
 
-        return {
+        out: Dict[str, Any] = {
             "catia_release": meta.get("catia_release", "unknown"),
             "query": q,
+            "scope": scope_norm,
             "nls_file_filter": nf or None,
             "total_nls_matches": len(nls_rows),
             "nls_entries": [
@@ -556,24 +700,28 @@ class CatalystDocsDB:
                     "file_stem": r["file_stem"],
                     "nls_key": r["nls_key"],
                     "text": r["text"],
+                    "entry_kind": r["entry_kind"] if "entry_kind" in r.keys() else ("option" if r["is_option_file"] else "ui"),
                     "is_option_file": bool(r["is_option_file"]),
                 }
                 for r in nls_rows
             ],
-            "related_option_docs": related_docs,
-            "xml_roundtrip_hint": (
+        }
+        if show_related:
+            out["related_option_docs"] = related_docs
+            out["xml_roundtrip_hint"] = (
                 "For .CATSettings without COM SettingController, export/import via: "
                 'CATSTART.exe -run "CATBatGenXMLSet.exe <OutDir> <RepoName>" / '
                 'CATSTART.exe -run "CATBatImpXMLSet.exe <XmlFile>" '
                 "(Note: DLNames.CATSettings requires CATSysDLExport)."
-            ),
-        }
+            )
+        return out
 
     def search_samples(
         self,
         query: str = "",
         ext: str = "",
         module: str = "",
+        source: str = "all",
         include_content: bool = False,
         include_binary: bool = True,
         max_chars: int = 6000,
@@ -590,6 +738,7 @@ class CatalystDocsDB:
         if ext_norm and not ext_norm.startswith("."):
             ext_norm = f".{ext_norm}"
         mod_norm = (module or "").strip()
+        src_norm = (source or "all").strip().lower()
         has_is_binary = self._has_column("doc_samples", "is_binary")
 
         cur = self.conn.cursor()
@@ -608,6 +757,9 @@ class CatalystDocsDB:
             where.append("doc_samples_fts MATCH ?")
             params.append(fts_q)
 
+        if src_norm in ("doc_samples", "startup"):
+            where.append("LOWER(s.source) = ?")
+            params.append(src_norm)
         if ext_norm:
             where.append("LOWER(s.ext) = ?")
             params.append(ext_norm)

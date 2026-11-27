@@ -112,10 +112,35 @@ def format_enum_markdown(data: dict) -> str:
     return "\n".join(md)
 
 def main():
-    parser = argparse.ArgumentParser(description="CATalyst V5 Automation API CLI")
+    parser = argparse.ArgumentParser(
+        description="CATalyst V5 Automation API, Docs, Command Headers & Shortcuts CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  catalyst_cli.py get Pad --from Application --format card --no-usecases\n"
+            "  catalyst_cli.py get HybridShapeFactory --member \"*Fillet*\" --format card\n"
+            "  catalyst_cli.py path RenderingMaterial --from Application\n"
+            "  catalyst_cli.py search AddNewPad --detail compact --no-cross-links\n"
+            "  catalyst_cli.py search OpenInNewWnd --include-catnls\n"
+            "  catalyst_cli.py settings OpenInNewWnd --scope headers\n"
+            "  catalyst_cli.py settings \"Ctrl+N\" --scope accelerators\n"
+            "  catalyst_cli.py docs \"Catalog Batch Mode\" --category user_guide --no-snippet\n"
+            "  catalyst_cli.py samples AISC_C --ext .catpart --source startup\n"
+        ),
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     
-    get_parser = subparsers.add_parser("get", help="Get full interface details or filter by specific member")
+    get_parser = subparsers.add_parser(
+        "get",
+        help="Get interface details or filter by member(s)/wildcards",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  catalyst_cli.py get Pad --member GetDirection\n"
+            "  catalyst_cli.py get Pad --from Application --format card --no-usecases\n"
+            "  catalyst_cli.py get HybridShapeFactory --member \"*Fillet*\" --format card\n"
+        ),
+    )
     get_parser.add_argument("name", type=str, help="Name of the interface (e.g., Pad, VisPropertySet)")
     get_parser.add_argument("--member", "-m", type=str, default=None, help="Filter to specific member(s) (exact, comma-list, or wildcard '*Fillet*')")
     get_parser.add_argument("--from", dest="from_interface", type=str, default=None, help="Compute shortest navigation path from root interface")
@@ -145,7 +170,17 @@ def main():
     syntax_parser.add_argument("--workbench", "-w", type=str, default=None, help="Workbench (e.g., PartDesign, GSD, Drafting)")
     syntax_parser.add_argument("--type", "-t", type=str, default=None, help="Geometry type (e.g., Pad, Hole, Point)")
 
-    search_parser = subparsers.add_parser("search", help="Search interfaces, enums, properties, and methods")
+    search_parser = subparsers.add_parser(
+        "search",
+        help="Search COM interfaces, enums, properties, methods (and optional CATNls headers)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  catalyst_cli.py search PartNumber --type property\n"
+            "  catalyst_cli.py search Fillet --detail compact --no-cross-links\n"
+            "  catalyst_cli.py search OpenInNewWnd --include-catnls\n"
+        ),
+    )
     search_parser.add_argument("query", type=str, help="Search query")
     search_parser.add_argument(
         "--type",
@@ -154,6 +189,9 @@ def main():
         default="all",
         help="Filter results by item type",
     )
+    search_parser.add_argument("--detail", choices=["compact", "full"], default="full", help="Compact omits descriptions")
+    search_parser.add_argument("--include-catnls", action="store_true", help="Also probe *.CATNls/*.CATRsc when 0 COM hits")
+    search_parser.add_argument("--no-cross-links", action="store_true", help="Skip host_interfaces_summary aggregation")
     search_parser.add_argument(
         "--limit",
         "-l",
@@ -170,11 +208,17 @@ def main():
     info_parser = subparsers.add_parser("info", help="Get diagnostic report of running CATIA instance")
     info_parser.add_argument("--clsid", type=str, default=None, help="Custom CLSID for ROT bridge connection")
 
-    docs_parser = subparsers.add_parser("docs", help="Search offline CATIA V5 User's Guide and Options docs")
+    docs_parser = subparsers.add_parser(
+        "docs",
+        help="Search offline CATIA V5 User's Guide and Options docs",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Example: catalyst_cli.py docs \"Catalog Batch Mode\" --category user_guide --no-snippet",
+    )
     docs_parser.add_argument("query", type=str, help="Search keywords")
     docs_parser.add_argument("--category", "-c", choices=["all", "user_guide", "options", "automation_doc"], default="all")
     docs_parser.add_argument("--module", "-m", type=str, default="", help="Module filter (e.g., cceug_C2)")
     docs_parser.add_argument("--solution", "-s", type=str, default="", help="Solution filter")
+    docs_parser.add_argument("--no-snippet", action="store_true", help="Omit text snippets for compact index output")
     docs_parser.add_argument("--limit", "-l", type=int, default=10)
 
     doc_page_parser = subparsers.add_parser("doc-page", help="Read a specific offline documentation page")
@@ -182,16 +226,34 @@ def main():
     doc_page_parser.add_argument("--section", type=str, default="", help="Optional heading substring")
     doc_page_parser.add_argument("--max-chars", type=int, default=12000)
 
-    settings_parser = subparsers.add_parser("settings", help="Search CATNls UI option keys and Tools>Options docs")
-    settings_parser.add_argument("query", type=str, nargs="?", default="", help="UI wording or option key")
-    settings_parser.add_argument("--nls-file", type=str, default="", help="CATNls file stem (e.g., CATCuiOptionEditor)")
-    settings_parser.add_argument("--all", dest="all_entries", action="store_true", help="Do not restrict to option/LongHelp files")
+    settings_parser = subparsers.add_parser(
+        "settings",
+        help="Search CATNls options, Command Header IDs, and CATRsc keyboard shortcuts",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  catalyst_cli.py settings FavoriteCatalog --scope options\n"
+            "  catalyst_cli.py settings OpenInNewWnd --scope headers\n"
+            "  catalyst_cli.py settings \"Ctrl+N\" --scope accelerators\n"
+        ),
+    )
+    settings_parser.add_argument("query", type=str, nargs="?", default="", help="UI wording, Command Header ID, shortcut ('Ctrl+N'), or option key")
+    settings_parser.add_argument("--nls-file", type=str, default="", help="File stem filter (e.g., CATCuiOptionEditor, CATFileHeader)")
+    settings_parser.add_argument("--scope", choices=["all", "options", "headers", "accelerators"], default="all", help="Scoped catalog target")
+    settings_parser.add_argument("--all", dest="all_entries", action="store_true", help="Do not restrict to option/LongHelp files (when scope=all)")
+    settings_parser.add_argument("--no-related-docs", action="store_true", help="Omit related_option_docs and xml_roundtrip_hint")
     settings_parser.add_argument("--limit", "-l", type=int, default=15)
 
-    samples_parser = subparsers.add_parser("samples", help="Search official CATIA V5 samples (text + binary CAD models)")
+    samples_parser = subparsers.add_parser(
+        "samples",
+        help="Search official CATIA V5 samples (text + binary CAD models)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Example: catalyst_cli.py samples AISC_C --ext .catpart --source startup",
+    )
     samples_parser.add_argument("query", type=str, nargs="?", default="", help="Filename or content keywords")
     samples_parser.add_argument("--ext", type=str, default="", help="Extension filter (e.g., .csv, .catpart)")
     samples_parser.add_argument("--module", "-m", type=str, default="", help="Module filter")
+    samples_parser.add_argument("--source", choices=["all", "doc_samples", "startup"], default="all", help="Filter by official doc samples vs win_b64/startup/")
     samples_parser.add_argument("--content", action="store_true", help="Print full text sample content")
     samples_parser.add_argument("--text-only", action="store_true", help="Exclude binary CAD/Excel samples")
     samples_parser.add_argument("--limit", "-l", type=int, default=10)
@@ -209,7 +271,14 @@ def main():
 
         if args.command == "docs":
             print(json.dumps(
-                docs_db.search_docs(args.query, category=args.category, module=args.module, solution=args.solution, limit=args.limit),
+                docs_db.search_docs(
+                    args.query,
+                    category=args.category,
+                    module=args.module,
+                    solution=args.solution,
+                    include_snippet=not args.no_snippet,
+                    limit=args.limit,
+                ),
                 indent=2, ensure_ascii=False
             ))
         elif args.command == "doc-page":
@@ -219,8 +288,16 @@ def main():
                 sys.exit(1)
             print(json.dumps(res, indent=2, ensure_ascii=False))
         elif args.command == "settings":
+            inc_rel = False if args.no_related_docs else None
             print(json.dumps(
-                docs_db.search_settings(args.query, nls_file=args.nls_file, options_only=not args.all_entries, limit=args.limit),
+                docs_db.search_settings(
+                    args.query,
+                    nls_file=args.nls_file,
+                    options_only=not args.all_entries,
+                    scope=args.scope,
+                    include_related_docs=inc_rel,
+                    limit=args.limit,
+                ),
                 indent=2, ensure_ascii=False
             ))
         elif args.command == "samples":
@@ -229,6 +306,7 @@ def main():
                     args.query,
                     ext=args.ext,
                     module=args.module,
+                    source=args.source,
                     include_content=args.content,
                     include_binary=not args.text_only,
                     limit=args.limit,
@@ -375,14 +453,31 @@ def main():
             sys.exit(1)
 
     elif args.command == "search":
-        results = db.search(args.query, item_type=args.type, limit=args.limit)
+        results = db.search(args.query, item_type=args.type, limit=args.limit, detail=args.detail)
         member_lookup = None
-        if args.type in ("all", "property", "method"):
+        if not args.no_cross_links and args.type in ("all", "property", "method"):
             member_lookup = db.get_interfaces_by_member(args.query, member_type=args.type if args.type != "all" else None)
 
-        if not results and (not member_lookup or member_lookup["total_host_interfaces"] == 0):
+        catnls_headers = []
+        if not results and args.include_catnls:
+            try:
+                from src.engine.docs_db import CatalystDocsDB
+                docs_db = CatalystDocsDB()
+                catnls_headers = docs_db.search_settings(
+                    query=args.query, options_only=False, scope="all", include_related_docs=False, limit=6
+                ).get("nls_entries", [])
+            except Exception:
+                pass
+
+        if not results and (not member_lookup or member_lookup["total_host_interfaces"] == 0) and not catnls_headers:
             print("No matches found.")
             sys.exit(0)
+
+        if catnls_headers:
+            print(f"Matched {len(catnls_headers)} *.CATNls / *.CATRsc entries:\n")
+            for h in catnls_headers:
+                print(f"- [{h.get('entry_kind', 'ui').upper()}] `{h['file_stem']}` :: `{h['nls_key']}` = `{h['text']}`")
+            print()
 
         if member_lookup and member_lookup["total_host_interfaces"] > 0:
             print(f"Member '{args.query}' is declared/hosted in {member_lookup['total_host_interfaces']} interfaces:")
