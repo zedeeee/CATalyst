@@ -535,6 +535,59 @@ def parse_catnls_file(fp: Path) -> List[Tuple[str, str, str, int]]:
     return rows
 
 
+def classify_catnls_entry(file_stem: str, nls_key: str, is_option_file: int) -> str:
+    """Classify a catalog entry into 'accelerator', 'option', 'header', or 'ui'."""
+    key_low = (nls_key or "").lower()
+    stem_low = (file_stem or "").lower()
+    if key_low.endswith(".accelerator"):
+        return "accelerator"
+    if is_option_file or "option" in key_low or "toolsoptions" in key_low:
+        return "option"
+    if stem_low.endswith(("header", "cmd")) or key_low.endswith((".title", ".help", ".shorthelp", ".longhelp", ".undotitle")):
+        return "header"
+    return "ui"
+
+
+def parse_catrsc_file(fp: Path) -> List[Tuple[str, str, str, int, str]]:
+    """
+    Parse a single .CATRsc file for keyboard shortcut bindings (.Accelerator = "Ctrl+...").
+    Returns rows: (file_stem, nls_key, text, is_option_file=0, entry_kind='accelerator').
+    """
+    try:
+        raw = fp.read_bytes()
+    except OSError:
+        return []
+    if not raw:
+        return []
+
+    for enc in ("utf-8-sig", "utf-8", "cp1252", "gbk"):
+        try:
+            content = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        content = raw.decode("utf-8", errors="replace")
+
+    stem = fp.stem
+    rows: List[Tuple[str, str, str, int, str]] = []
+    for line in content.splitlines():
+        s = line.strip()
+        if not s or s.startswith("//") or s.startswith("#") or ".Accelerator" not in s or "=" not in s:
+            continue
+        m = _NLS_KV_RE.match(s)
+        if not m:
+            continue
+        key = m.group(1).strip()
+        if not key.lower().endswith(".accelerator"):
+            continue
+        val = _clean_inline(m.group(2).replace('\\"', '"'))
+        if not val:
+            continue
+        rows.append((stem, key, val, 0, "accelerator"))
+    return rows
+
+
 def _decode_text_file(fp: Path) -> Optional[str]:
     try:
         raw = fp.read_bytes()

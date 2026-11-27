@@ -1104,7 +1104,7 @@ class CatalystDB:
             "methods": methods
         }
 
-    def search(self, query: str, item_type: Optional[str] = None, limit: int = 20, _allow_synonym: bool = True) -> List[Dict[str, Any]]:
+    def search(self, query: str, item_type: Optional[str] = None, limit: int = 20, _allow_synonym: bool = True, detail: str = "full") -> List[Dict[str, Any]]:
         """
         Searches across interfaces, enums, properties, and methods.
         Prioritizes SQLite FTS5 BM25 full-text indexing, with automatic fallback to LIKE queries.
@@ -1184,17 +1184,20 @@ class CatalystDB:
                         rows = _exec_api_fts(fts_or)
 
                 if rows:
+                    is_compact = (detail or "full").strip().lower() == "compact"
                     for row in rows:
-                        results.append({
+                        entry = {
                             "type": row["type"],
                             "name": row["name"],
-                            "description": sanitize_doc_text(row["description"] or "", strip_example=True, max_chars=140),
                             "framework": row["framework"] or "",
                             "parent_interface": row["parent_interface"] or "",
                             "data_type": row["data_type"] or "",
                             "readonly": bool(row["readonly"]),
                             "declared_in": row["declared_in"]
-                        })
+                        }
+                        if not is_compact:
+                            entry["description"] = sanitize_doc_text(row["description"] or "", strip_example=True, max_chars=140)
+                        results.append(entry)
                     return results
             except Exception as e:
                 logger.debug(f"FTS5 API search fallback to LIKE: {e}")
@@ -1288,7 +1291,7 @@ class CatalystDB:
             seen_names = set()
             target_limit = limit if limit else 20
             for alt_q in expand_bilingual_queries(query):
-                for item in self.search(alt_q, item_type=item_type, limit=target_limit, _allow_synonym=False):
+                for item in self.search(alt_q, item_type=item_type, limit=target_limit, _allow_synonym=False, detail=detail):
                     key = (item["type"], item["name"])
                     if key not in seen_names:
                         seen_names.add(key)
