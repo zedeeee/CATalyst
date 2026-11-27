@@ -195,15 +195,15 @@ Optional environment overrides:
 | Category | Tool | Purpose |
 | :--- | :--- | :--- |
 | **COM API** | `get_catia_interface` | Adaptive interface lookup (`detail`: `auto`/`summary`/`compact`/`full`; `output_format`: `json`/`card`): supports exact/comma/wildcard `member_name` filtering (`*Fillet*`), base-member folding, `from_interface` navigation with terminal constructor signature, inline `referenced_enums`, implementation caveats (`pitfall_warning`), and linked official docs/samples |
-| **COM API** | `search_catia_api` | FTS5 BM25 search across interfaces, enums, properties, and methods (with reverse host lookup & 0-hit doc hint) |
+| **COM API** | `search_catia_api` | FTS5 BM25 search across interfaces, enums, properties, and methods (`detail`: `full`/`compact`, `include_cross_links`, `include_catnls` for opt-in Command Header/shortcut lookup) |
 | **COM API** | `get_catia_enum` | Bidirectional enum lookup by enum name, integer value, or member name |
 | **COM API** | `get_catia_usecases` | Dual-track official VBScript tutorials + community Python `win32com` examples |
 | **COM API** | `search_catia_recipes` | Natural-language BM25 search over curated industrial automation recipes |
 | **COM API** | `get_catia_search_syntax` | Exact `Selection.Search` workbench prefixes and query grammar |
-| **Offline Docs** | `search_catia_docs` | BM25 search over User's Guide, `Tools > Options`, and Automation articles (`category` / `module` / `solution` filters) |
+| **Offline Docs** | `search_catia_docs` | BM25 search over User's Guide, `Tools > Options`, and Automation articles (`category`/`module`/`solution` filters, `include_snippet=False` compact index mode) |
 | **Offline Docs** | `get_catia_doc_page` | Clean Markdown page body, section slicing, official warnings, `linked_docs`, `linked_files`, and resolved screenshot `abs_path` |
-| **Settings** | `search_catia_settings` | Search `*.CATNls` UI labels/keys with CamelCase fallback, cross-linked `Tools > Options` pages, and `CATBatGen/ImpXMLSet` hints |
-| **Samples** | `search_catia_samples` | Search official text samples (`.csv`, `.CATScript`, `.txt`, `.xml`) with full content + binary CAD templates (`.CATPart`, `.catalog`, etc.) with resolved `abs_path` |
+| **Settings & Cmds** | `search_catia_settings` | Scoped search across `*.CATNls` & `*.CATRsc` (`scope`: `all`/`options`/`headers`/`accelerators`) for `Tools > Options`, Command Header IDs (`OpenInNewWnd`), and shortcuts (`Ctrl+N`), with optional `include_related_docs` |
+| **Samples** | `search_catia_samples` | Search official text samples (`.csv`, `.CATScript`, `.txt`, `.xml`) + binary CAD templates (`source`: `all`/`doc_samples`/`startup`) with resolved `abs_path` |
 
 ---
 
@@ -218,16 +218,20 @@ uv run python catalyst_cli.py get Pad --from Application --format card --no-usec
 uv run python catalyst_cli.py get HybridShapeFactory --member "*Fillet*" --format card
 uv run python catalyst_cli.py path Pad --from Application
 uv run python catalyst_cli.py search "PartNumber" --type property
+uv run python catalyst_cli.py search "Fillet" --detail compact --no-cross-links
+uv run python catalyst_cli.py search "OpenInNewWnd" --include-catnls
 uv run python catalyst_cli.py enum CatProductSource --value 1
 uv run python catalyst_cli.py recipe "CreateCatalogFromcsv"
 uv run python catalyst_cli.py syntax --workbench PartDesign
 
-# Offline Docs, CATNls Settings & Official Samples
-uv run python catalyst_cli.py docs "Catalog Batch Mode" --category user_guide
+# Offline Docs, CATNls Options, Command Headers, Shortcuts & Samples
+uv run python catalyst_cli.py docs "Catalog Batch Mode" --category user_guide --no-snippet
 uv run python catalyst_cli.py doc-page "cceug_C2/cceugbt0102.htm" --section "Batch Mode"
-uv run python catalyst_cli.py settings "FavoriteCatalog"
+uv run python catalyst_cli.py settings "FavoriteCatalog" --scope options
+uv run python catalyst_cli.py settings "OpenInNewWnd" --scope headers
+uv run python catalyst_cli.py settings "Ctrl+N" --scope accelerators
 uv run python catalyst_cli.py samples "BatchCatalog" --ext .csv --content
-uv run python catalyst_cli.py samples "AISC_C" --ext .catpart
+uv run python catalyst_cli.py samples "AISC_C" --ext .catpart --source startup
 ```
 
 ---
