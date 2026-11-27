@@ -195,15 +195,15 @@ uv run python build_docs.py \
 | 分类 | Tool | 职责 |
 | :--- | :--- | :--- |
 | **COM API** | `get_catia_interface` | 自适应接口查询（`detail`: `auto`/`summary`/`compact`/`full`；`output_format`: `json`/`card`）：支持精确/逗号/通配符（`*Fillet*`）过滤、基类样板折叠、`from_interface` 寻路直出终点构造器签名、自动内联 `referenced_enums`、实现约束 (`pitfall_warning`) 及官方文档/样板关联 |
-| **COM API** | `search_catia_api` | FTS5 BM25 检索接口/枚举/属性/方法（附宿主接口反查与 0 命中文档引导） |
+| **COM API** | `search_catia_api` | FTS5 BM25 检索接口/枚举/属性/方法（支持 `detail`: `full`/`compact`、`include_cross_links` 开关跨库关联、`include_catnls=True` 按需探测命令/快捷键） |
 | **COM API** | `get_catia_enum` | 枚举双向查询（按名称、数值索引或成员名反查） |
 | **COM API** | `get_catia_usecases` | 双轨查询官方 VBScript 示例与社区 Python `win32com` 实例 |
 | **COM API** | `search_catia_recipes` | 按自然语言意图 BM25 检索工业实战避坑 Recipe |
 | **COM API** | `get_catia_search_syntax` | 查询 `Selection.Search` 精确工作台前缀与语法 |
-| **离线文档** | `search_catia_docs` | BM25 检索 User's Guide、`Tools > Options` 与 Automation 技术文章（支持 `category`/`module`/`solution` 过滤） |
+| **离线文档** | `search_catia_docs` | BM25 检索 User's Guide、`Tools > Options` 与 Automation 技术文章（支持 `category`/`module`/`solution` 与 `include_snippet=False` 极简目录模式） |
 | **离线文档** | `get_catia_doc_page` | 读取清洗后的页面正文、按章节切片、官方警告、`linked_docs`、`linked_files` 与解析后的截图 `abs_path` |
-| **配置映射** | `search_catia_settings` | 检索 `*.CATNls` UI 文案与选项键（支持 CamelCase 切词回退），自动关联 `Tools > Options` 文档页与 `CATBatGen/ImpXMLSet` 提示 |
-| **官方样板** | `search_catia_samples` | 检索官方纯文本样板（`.csv`/`.CATScript`/`.txt`/`.xml`，支持吐出全文）及二进制 CAD 样板（`.CATPart`/`.catalog` 等，返回相对路径与运行时 `abs_path`） |
+| **配置与命令** | `search_catia_settings` | 分域检索 `*.CATNls` 与 `*.CATRsc`（`scope`: `all`/`options`/`headers`/`accelerators`），覆盖配置项、GUI Command Header ID（`OpenInNewWnd`）及快捷键（`Ctrl+N`），支持 `include_related_docs` 开关 |
+| **官方样板** | `search_catia_samples` | 检索官方纯文本样板与二进制 CAD 样板（支持 `source`: `all`/`doc_samples`/`startup` 精准过滤），返回相对路径与运行时 `abs_path` |
 
 ---
 
@@ -218,16 +218,20 @@ uv run python catalyst_cli.py get Pad --from Application --format card --no-usec
 uv run python catalyst_cli.py get HybridShapeFactory --member "*Fillet*" --format card
 uv run python catalyst_cli.py path Pad --from Application
 uv run python catalyst_cli.py search "PartNumber" --type property
+uv run python catalyst_cli.py search "Fillet" --detail compact --no-cross-links
+uv run python catalyst_cli.py search "OpenInNewWnd" --include-catnls
 uv run python catalyst_cli.py enum CatProductSource --value 1
 uv run python catalyst_cli.py recipe "CreateCatalogFromcsv"
 uv run python catalyst_cli.py syntax --workbench PartDesign
 
-# 离线手册、CATNls 配置与官方样板
-uv run python catalyst_cli.py docs "Catalog Batch Mode" --category user_guide
+# 离线手册、CATNls 配置、命令 ID、快捷键与官方样板
+uv run python catalyst_cli.py docs "Catalog Batch Mode" --category user_guide --no-snippet
 uv run python catalyst_cli.py doc-page "cceug_C2/cceugbt0102.htm" --section "Batch Mode"
-uv run python catalyst_cli.py settings "FavoriteCatalog"
+uv run python catalyst_cli.py settings "FavoriteCatalog" --scope options
+uv run python catalyst_cli.py settings "OpenInNewWnd" --scope headers
+uv run python catalyst_cli.py settings "Ctrl+N" --scope accelerators
 uv run python catalyst_cli.py samples "BatchCatalog" --ext .csv --content
-uv run python catalyst_cli.py samples "AISC_C" --ext .catpart
+uv run python catalyst_cli.py samples "AISC_C" --ext .catpart --source startup
 ```
 
 ---

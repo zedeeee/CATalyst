@@ -53,7 +53,7 @@ CATalyst 采用**纯只读知识平面**设计（不耦合实时 `win32com` 会�
 ### 2.2 `dist/local/catalyst_docs.db`（可选离线文档扩展库）
 - `metadata`：记录 `catia_release`（如 `B27`）、`portable_relative_paths = true`、页数/条目统计；**不存储任何本机绝对路径**。
 - `doc_pages` + `doc_pages_fts`（External Content FTS5）：解析 `Bxxdoc/English/online/` HTML 页面、TOC 层级、`<a name="ix-...">` 索引词、警告框、`linked_docs`、`linked_files` 与图片相对路径。
-- `catnls_entries` + `catnls_fts`：解析 `win_b64/resources/msgcatalog/*.CATNls` UI 文本与选项键，支持 CamelCase 切词回退。
+- `catnls_entries` + `catnls_fts`：解析 `win_b64/resources/msgcatalog/*.CATNls` 文案与 `*.CATRsc` 快捷键（`.Accelerator`），通过 `entry_kind`（`option` / `header` / `accelerator` / `ui`）区分配置项、GUI Command Header ID 与快捷键（老库首次查询 `accelerators` 时自动增量自愈导入 `*.CATRsc`，无需重编 HTML）。
 - `samples` + `samples_fts`：文本样板存正文 + 相对路径；二进制 CAD 样板（`.CATPart`/`.CATProduct`/`.catalog` 等）仅索引元信息与相对路径。
 - `doc_api_links`：官方样板宏与 HTML 用例文档的 COM API 反向索引表（存储 `interface_name`, `member_name`, `target_type`, `ref_id`, `rel_path`, `line_no`, `code_snippet`, `official_note`；支持自愈按需构建）。在 `get_catia_interface` 查询时自动挂载，解冻孤儿接口实战代码。
 
